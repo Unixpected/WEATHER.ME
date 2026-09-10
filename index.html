@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SkyPulse Weather — Local Weather Intelligence</title>
+<link rel="manifest" href="manifest.json"><link rel="icon" href="icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#07111f"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="weather-scene" aria-hidden="true"><div class="orb orb-a"></div><div class="orb orb-b"></div><div class="cloud cloud-a"></div><div class="cloud cloud-b"></div><div class="rain-layer"></div></div>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#"><span class="brand-mark">✦</span><span><strong>SkyPulse</strong><small>Local weather intelligence</small></span></a>
+    <div class="top-actions">
+      <button class="icon-btn" onclick="useMyLocation()" title="Use my location" aria-label="Use my location">⌖</button>
+      <div class="theme-toggle" role="group" aria-label="Theme"><button id="themeDark" class="theme-btn" onclick="setTheme('dark')">☾</button><button id="themeLight" class="theme-btn" onclick="setTheme('light')">☼</button><button id="themeSystem" class="theme-btn" onclick="setTheme('system')">◐</button></div>
+    </div>
+  </div>
+</header>
+<main class="shell">
+  <section class="hero-intro">
+    <div><span class="eyebrow">LIVE LOCAL FORECAST</span><h1>Weather, without the guesswork.</h1><p>Six independent forecast models, short-term nowcast, local variation and practical recommendations in one view.</p></div>
+    <div class="hero-status"><span class="live-dot"></span><span>Live forecast</span></div>
+  </section>
+
+  <nav class="main-nav" aria-label="Main navigation">
+    <button id="tabForecastBtn" class="nav-item tab-active" onclick="switchTab('forecast')"><span>◉</span> Overview</button>
+    <button id="tabToolsBtn" class="nav-item" onclick="switchTab('tools')"><span>⌘</span> Planner & Data</button>
+    <button id="tabTyphoonBtn" class="nav-item" onclick="switchTab('typhoon')"><span>◌</span> Typhoon Radar</button>
+  </nav>
+
+  <div id="status" class="loading-message">Preparing your forecast…</div>
+
+  <div id="forecastTab">
+    <section class="location-bar card-surface">
+      <div class="location-main"><span class="location-pin">⌖</span><div><small>FORECAST LOCATION</small><strong id="locationLabel">Choose a location</strong></div></div>
+      <div class="location-actions"><button class="primary-btn" onclick="useMyLocation()">Use my location</button><button class="ghost-btn" onclick="document.getElementById('manualBox').style.display='block';document.getElementById('manualCity').focus()">Search</button></div>
+    </section>
+    <div id="manualBox" class="search-panel card-surface" style="display:none">
+      <div class="search-head"><div><b>Find a place</b><span>Search a city, street, barangay or landmark.</span></div><button class="close-btn" onclick="document.getElementById('manualBox').style.display='none'">×</button></div>
+      <div class="search-line"><div class="search-wrap"><span>⌕</span><input id="manualCity" type="text" placeholder="e.g. Libertad, Pasay or Taft Avenue, Manila" oninput="onCityInput()" onblur="hideSuggestionsDelayed()"><div id="citySuggestions" class="suggestions" style="display:none"></div></div><button class="primary-btn" onclick="searchCity()">Find weather</button></div>
+      <div id="manualErr" class="err"></div>
+    </div>
+
+    <div id="map" class="location-map"></div>
+    <div id="pickedPanel" class="picked-panel card-surface" style="display:none"><div><small>SELECTED ON MAP</small><strong id="pickedName">—</strong></div><div><button class="primary-btn" onclick="confirmPickedLocation()">Use this spot</button><button class="ghost-btn" onclick="savePickedLocation()">☆ Save</button></div></div>
+    <div class="map-hint">Click the map for an exact point · <button class="text-btn" onclick="cycleTileProvider()">change map style</button></div>
+    <div class="saved-section"><div class="section-heading"><div><span class="eyebrow">YOUR PLACES</span><h2>Saved locations</h2></div></div><div id="savedLocations" class="saved-list"></div></div>
+
+    <div id="app" style="display:none">
+      <section class="weather-hero" id="weatherHero">
+        <div class="hero-main">
+          <div class="hero-meta"><span class="live-pill"><i></i> NOW</span><span id="confBadge" class="badge mid">Loading confidence</span></div>
+          <div class="hero-location" id="heroPlace">—</div>
+          <div class="hero-temperature"><span id="heroTemp">--°</span><div><strong id="heroCondition">Loading…</strong><small>Feels like <b id="heroFeels">--°</b></small></div></div>
+          <div class="hero-sun" id="heroSun">—</div>
+          <div class="hero-actions"><button class="hero-action" onclick="reopenLocationPicker()">⌖ Change location</button><button class="hero-action" onclick="saveCurrentLocation()">☆ Save</button></div>
+        </div>
+        <div class="weather-visual"><div class="sun-core"></div><div class="weather-icon-orbit">☁</div><div class="visual-caption">LOCAL CONDITIONS</div><div class="aqi-chip" id="aqiChip">🍃 AQI —</div></div>
+        <div class="metric-grid">
+          <div class="metric"><span>RAIN CHANCE</span><strong id="heroRain">--%</strong><i>☂</i></div>
+          <div class="metric"><span>HUMIDITY</span><strong id="heroHumidity">--%</strong><i>◌</i></div>
+          <div class="metric"><span>WIND</span><strong id="heroWind">-- km/h</strong><i>≋</i></div>
+          <div class="metric"><span>CLOUD COVER</span><strong id="heroCloud">--%</strong><i>☁</i></div>
+          <div class="metric"><span>UV INDEX</span><strong id="uvValue">--</strong><i>☀</i><div id="uvGauge"></div></div>
+          <div class="metric"><span>PRESSURE</span><strong id="pressureValue">-- mb</strong><i>⌁</i><div id="pressureGauge"></div></div>
+        </div>
+      </section>
+
+      <section class="section-block intelligence-block"><div class="section-heading"><div><span class="eyebrow">WHAT MATTERS</span><h2>Your weather plan</h2></div><span class="section-note">Updated from the forecast</span></div><div id="insightList" class="insight-grid"></div></section>
+
+      <section class="section-block"><div class="section-heading"><div><span class="eyebrow">NEXT HOURS</span><h2>Rain & temperature timeline</h2></div><span class="section-note">Tap an hour for details</span></div><div id="hourCardsRow" class="hour-timeline"></div><button id="detailsToggleBtn" class="expand-btn" onclick="toggleDetailsPanel()" aria-expanded="false">Show 15-minute details <span>↓</span></button><div id="detailsPanel" class="details-panel"><div id="minuteList" class="minute-list"></div></div></section>
+
+      <section class="section-block"><div class="section-heading"><div><span class="eyebrow">MICRO-GRID</span><h2>What changes around you?</h2></div><span class="section-note">~5 km in each direction</span></div><div id="gridPoints" class="micro-grid"></div></section>
+
+      <section class="section-block"><div class="section-heading"><div><span class="eyebrow">DAY AHEAD</span><h2>24-hour outlook</h2></div></div><div class="forecast-strip-shell"><div id="hourStrip" class="strip-scroll"></div></div></section>
+
+      <section class="section-block"><div class="section-heading"><div><span class="eyebrow">EXTENDED OUTLOOK</span><h2>Next 5 days</h2></div></div><div id="fiveDayList" class="five-day"></div></section>
+    </div>
+  </div>
+
+  <div id="toolsTab" style="display:none">
+    <section class="tools-hero card-surface"><span class="eyebrow">TRAVEL ASSISTANT</span><h2>Plan before you go.</h2><p>Compare weather at your starting point and destination for the time you expect to travel.</p></section>
+    <section class="planner-card card-surface"><div class="planner-route"><div class="field"><label>FROM</label><div class="input-wrap"><span>●</span><input id="tripFrom" type="text" placeholder="Current forecast location" oninput="onTripInput('from')" onblur="hideTripSuggestionsDelayed('from')"><div id="tripFromSuggestions" class="suggestions" style="display:none"></div></div></div><div class="route-line"></div><div class="field"><label>TO</label><div class="input-wrap"><span>⌖</span><input id="tripTo" type="text" placeholder="Destination" oninput="onTripInput('to')" onblur="hideTripSuggestionsDelayed('to')"><div id="tripToSuggestions" class="suggestions" style="display:none"></div></div></div></div><div class="planner-bottom"><div class="field"><label>DEPARTURE</label><select id="tripWhen"><option value="0">Now</option><option value="1">In 1 hour</option><option value="2">In 2 hours</option><option value="3">In 3 hours</option><option value="5">In 5 hours</option></select></div><button class="primary-btn large" onclick="checkTrip()">Check my trip →</button></div><div id="tripResult" class="trip-result"></div></section>
+    <section class="section-block"><div class="section-heading"><div><span class="eyebrow">FORECAST MODELS</span><h2>Model comparison</h2></div></div><div class="chart-card card-surface"><canvas id="chart" height="110"></canvas><div id="chartLegend" class="legend-row"></div></div><div id="modelLegend" class="data-note"></div></section>
+  </div>
+
+  <div id="typhoonTab" style="display:none">
+    <section class="typhoon-hero"><div><span class="eyebrow">PHILIPPINE WEATHER WATCH</span><h2>Typhoon & wind radar</h2><p>Track active tropical cyclones and broad wind conditions. For Philippine warnings, always verify with PAGASA.</p></div><div id="typhoonStatusCard" class="status-card"><span class="status-dot"></span><div><b>Checking active systems…</b><small>Public global feed</small></div></div></section>
+    <div class="radar-actions"><button class="primary-btn" onclick="centerTyphoonOnMyLocation()">⌖ Center on my location</button><button class="ghost-btn" onclick="loadActiveTyphoons()">↻ Refresh systems</button></div>
+    <div id="typhoonMapWrap" class="radar-frame"><iframe id="typhoonFrame" title="Typhoon and wind speed map" width="100%" height="560" frameborder="0" loading="lazy"></iframe></div>
+    <section class="storm-panel card-surface"><div class="section-heading"><div><span class="eyebrow">GLOBAL SYSTEMS</span><h2>Active tropical cyclones</h2></div></div><div id="typhoonList">Loading…</div></section>
+    <div class="official-alert"><div class="official-icon">!</div><div><b>Official Philippine alerts</b><p>International feeds are useful for tracking, but Philippine cyclone names and warning signals should be checked against PAGASA.</p><a href="https://www.pagasa.dost.gov.ph/tropical-cyclone/severe-weather-bulletin" target="_blank" rel="noopener">Open PAGASA Severe Weather Bulletin →</a></div></div>
+    <section class="map-settings card-surface"><div class="section-heading"><div><span class="eyebrow">MAP VIEW</span><h2>Remember radar position</h2></div></div><div class="two-col"><div class="field"><label>LATITUDE</label><input id="typhoonLat" placeholder="14.5378"></div><div class="field"><label>LONGITUDE</label><input id="typhoonLon" placeholder="120.9986"></div></div><div class="field"><label>ZOOM</label><input id="typhoonZoom" placeholder="6"></div><button class="primary-btn" onclick="saveTyphoonView()">Save map view</button></section>
+  </div>
+</main>
+<footer class="footer">SkyPulse · Open-Meteo models · OpenStreetMap · Windy · GDACS · PAGASA official source for Philippine warnings</footer>
+<script src="app.js"></script>
+</body></html>

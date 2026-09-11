@@ -1,6 +1,15 @@
 const statusEl = document.getElementById('status');
 let CURRENT = null; // {lat, lon, label}
 let map = null;
+let lastUpdatedAt = null;
+
+function updateLastUpdatedLabel(){
+  const el = document.getElementById('lastUpdated');
+  if(!el || !lastUpdatedAt) return;
+  const mins = Math.max(0, Math.round((Date.now() - lastUpdatedAt) / 60000));
+  el.textContent = mins < 1 ? '· Updated just now' : `· Updated ${mins}m ago`;
+}
+setInterval(updateLastUpdatedLabel, 30000);
 
 // --- Theme (dark/light/system), persisted on this device ---
 function applyTheme(pref){
@@ -1081,6 +1090,65 @@ async function checkTrip(){
   }
 }
 
+// Nearby-direction micro-grid: fetches independently of the main forecast so a failure
+// here can't cascade and take down the rest of the page. Shows a shimmer while loading
+// and a clear retry state (instead of hanging on "Loading…") if the fetch fails.
+async function loadMicroGrid(lat, lon){
+  const gridEl = document.getElementById('gridPoints');
+  gridEl.innerHTML = Array(4).fill('<div class="mini"><span class="skeleton">Loading direction</span></div>').join('');
+  try{
+    const pts = offsetPoints(lat, lon, 5);
+    const dirs = Object.keys(pts);
+    const results = await Promise.all(dirs.map(d => fetchSimple(pts[d].lat, pts[d].lon)));
+    gridEl.innerHTML = dirs.map((d,i) => {
+      const r = results[i];
+      const idx = currentHourIndex(r.hourly.time);
+      const t = r.hourly.temperature_2m[idx];
+      const p = r.hourly.precipitation_probability[idx];
+      const c = r.hourly.cloud_cover ? r.hourly.cloud_cover[idx] : null;
+      const cond = simpleCondition(p, c, isDaytime(new Date(r.hourly.time[idx])));
+      return `<div class="mini"><div class="dir">${pts[d].dir}</div><div style="font-size:1.1rem; margin:2px 0;">${cond.icon}</div><div class="t">${t?.toFixed(1) ?? '--'}°</div><div class="p" style="font-size:.66rem;">${cond.text}</div></div>`;
+    }).join('');
+  }catch(e){
+    gridEl.innerHTML = `<div class="mini-error"><span>Nearby conditions unavailable right now.</span><button class="text-btn" onclick="loadMicroGrid(${lat}, ${lon})">Retry</button></div>`;
+  }
+}
+
+// 5-day overview: same independent-fetch pattern as loadMicroGrid above.
+function loadFiveDay(lat, lon){
+  const el = document.getElementById('fiveDayList');
+  el.innerHTML = '<div class="day-row"><span class="skeleton">Loading the 5-day outlook</span></div>';
+  fetchFiveDayOverview(lat, lon).then(fd => {
+    const days = fd.daily.time;
+    const rows = days.map((d, i) => {
+      const dt = new Date(d);
+      const dayLabel = i === 0 ? 'Today' : dt.toLocaleDateString(undefined, {weekday:'short'});
+      const hi = fd.daily.temperature_2m_max[i];
+      const lo = fd.daily.temperature_2m_min[i];
+      const rain = fd.daily.precipitation_probability_max[i];
+      const icon = rain >= 50 ? '🌧️' : rain >= 20 ? '🌦️' : '☀️';
+      const allHi = Math.max(...fd.daily.temperature_2m_max);
+      const allLo = Math.min(...fd.daily.temperature_2m_min);
+      const range = allHi - allLo || 1;
+      const leftPct = ((lo - allLo) / range) * 100;
+      const widthPct = ((hi - lo) / range) * 100;
+      return `<div class="day-row">
+        <div class="day-name">${dayLabel}</div>
+        <div class="day-icon">${icon}</div>
+        <div class="day-rain">${rain ?? 0}%</div>
+        <div class="day-bar-wrap">
+          <div class="day-lo">${lo?.toFixed(0) ?? '--'}°</div>
+          <div class="day-bar-track"><div class="day-bar-fill" style="left:${leftPct}%; width:${widthPct}%;"></div></div>
+          <div class="day-hi">${hi?.toFixed(0) ?? '--'}°</div>
+        </div>
+      </div>`;
+    }).join('');
+    el.innerHTML = rows;
+  }).catch(()=>{
+    el.innerHTML = `<div class="mini-error"><span>5-day forecast unavailable right now.</span><button class="text-btn" onclick="loadFiveDay(${lat}, ${lon})">Retry</button></div>`;
+  });
+}
+
 async function runForLocation(lat, lon, label){
   CURRENT = {lat, lon, label};
   showLoadingSkeleton();
@@ -1170,34 +1238,9 @@ async function runForLocation(lat, lon, label){
       document.getElementById('aqiChip').innerHTML = `🍃 AQI ${aqi} · <span style="color:${cat.color};">${cat.label}</span>`;
     }).catch(()=>{ document.getElementById('aqiChip').textContent = '🍃 AQI unavailable'; });
 
-    // 5-day forecast — separate lightweight fetch
-    fetchFiveDayOverview(lat, lon).then(fd => {
-      const days = fd.daily.time;
-      const rows = days.map((d, i) => {
-        const dt = new Date(d);
-        const dayLabel = i === 0 ? 'Today' : dt.toLocaleDateString(undefined, {weekday:'short'});
-        const hi = fd.daily.temperature_2m_max[i];
-        const lo = fd.daily.temperature_2m_min[i];
-        const rain = fd.daily.precipitation_probability_max[i];
-        const icon = rain >= 50 ? '🌧️' : rain >= 20 ? '🌦️' : '☀️';
-        const allHi = Math.max(...fd.daily.temperature_2m_max);
-        const allLo = Math.min(...fd.daily.temperature_2m_min);
-        const range = allHi - allLo || 1;
-        const leftPct = ((lo - allLo) / range) * 100;
-        const widthPct = ((hi - lo) / range) * 100;
-        return `<div class="day-row">
-          <div class="day-name">${dayLabel}</div>
-          <div class="day-icon">${icon}</div>
-          <div class="day-rain">${rain ?? 0}%</div>
-          <div class="day-bar-wrap">
-            <div class="day-lo">${lo?.toFixed(0) ?? '--'}°</div>
-            <div class="day-bar-track"><div class="day-bar-fill" style="left:${leftPct}%; width:${widthPct}%;"></div></div>
-            <div class="day-hi">${hi?.toFixed(0) ?? '--'}°</div>
-          </div>
-        </div>`;
-      }).join('');
-      document.getElementById('fiveDayList').innerHTML = rows;
-    }).catch(()=>{ document.getElementById('fiveDayList').innerHTML = '<span class="err">5-day forecast unavailable.</span>'; });
+    // 5-day forecast — separate lightweight fetch, isolated so a failure here can't
+    // cascade and take down the rest of the page (see loadFiveDay above)
+    loadFiveDay(lat, lon);
 
     document.getElementById('modelLegend').innerHTML =
       `Models in this forecast: <b>${MODELS.map(m=>m.name).join(', ')}</b> — temperature/wind/cloud consensus is the median across all of them. Rain chance = % of these models forecasting measurable rain (not a borrowed probability field, since that's not reliably defined per individual model).`;
@@ -1241,7 +1284,7 @@ async function runForLocation(lat, lon, label){
       }
     }
     document.getElementById('insightList').innerHTML = insights.map(i => `
-      <div class="insight-item"><span class="ii-icon">${i.icon}</span><span>${i.text}</span></div>
+      <div class="insight-item"><span class="ii-icon">${i.icon}</span><span class="ii-text">${i.text}</span></div>
     `).join('');
 
     const fineData = await fetchFineResolution(lat, lon);
@@ -1249,20 +1292,7 @@ async function runForLocation(lat, lon, label){
     renderMinuteList(finePoints);
     renderHourCards(finePoints);
 
-    const pts = offsetPoints(lat, lon, 5);
-    const gridEl = document.getElementById('gridPoints');
-    gridEl.innerHTML = '<div class="mini">Loading…</div>';
-    const dirs = Object.keys(pts);
-    const results = await Promise.all(dirs.map(d => fetchSimple(pts[d].lat, pts[d].lon)));
-    gridEl.innerHTML = dirs.map((d,i) => {
-      const r = results[i];
-      const idx = currentHourIndex(r.hourly.time);
-      const t = r.hourly.temperature_2m[idx];
-      const p = r.hourly.precipitation_probability[idx];
-      const c = r.hourly.cloud_cover ? r.hourly.cloud_cover[idx] : null;
-      const cond = simpleCondition(p, c, isDaytime(new Date(r.hourly.time[idx])));
-      return `<div class="mini"><div class="dir">${pts[d].dir}</div><div style="font-size:1.1rem; margin:2px 0;">${cond.icon}</div><div class="t">${t?.toFixed(1) ?? '--'}°</div><div class="p" style="font-size:.66rem;">${cond.text}</div></div>`;
-    }).join('');
+    loadMicroGrid(lat, lon);
 
     attachWeatherMarkers(lat, lon);
     document.getElementById('tripFrom').placeholder = `Defaults to ${label}`;
@@ -1316,6 +1346,8 @@ async function runForLocation(lat, lon, label){
 
     statusEl.style.display = 'none';
     document.getElementById('app').style.display = 'block';
+    lastUpdatedAt = Date.now();
+    updateLastUpdatedLabel();
   }catch(err){
     console.error(err);
     statusEl.style.display = 'block';
@@ -1336,6 +1368,16 @@ function showLoadingSkeleton(){
   document.getElementById('heroTemp').innerHTML = '<span class="skeleton">--°</span>';
   document.getElementById('heroCondition').innerHTML = '<span class="skeleton">Loading condition</span>';
   document.getElementById('heroPlace').innerHTML = '<span class="skeleton">Loading location details</span>';
+  document.getElementById('heroRain').innerHTML = '<span class="skeleton">--%</span>';
+  document.getElementById('heroHumidity').innerHTML = '<span class="skeleton">--%</span>';
+  document.getElementById('heroWind').innerHTML = '<span class="skeleton">-- km/h</span>';
+  document.getElementById('heroCloud').innerHTML = '<span class="skeleton">--%</span>';
+  document.getElementById('uvValue').innerHTML = '<span class="skeleton">--</span>';
+  document.getElementById('pressureValue').innerHTML = '<span class="skeleton">-- mb</span>';
+  document.getElementById('uvGauge').innerHTML = '<div class="skeleton-gauge"></div>';
+  document.getElementById('pressureGauge').innerHTML = '<div class="skeleton-gauge"></div>';
+  const lastUpdatedEl = document.getElementById('lastUpdated');
+  if(lastUpdatedEl) lastUpdatedEl.textContent = '';
   document.getElementById('hourCardsRow').innerHTML = Array(5).fill(0).map(()=>`
     <div class="hour-card"><div class="hc-time skeleton">--</div><div class="hc-icon skeleton">--</div><div class="hc-temp skeleton">--°</div></div>
   `).join('');

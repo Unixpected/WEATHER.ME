@@ -1,6 +1,6 @@
 {
-  "name": "Local Weather Consensus",
-  "short_name": "Weather",
+  "name": "SkyPulse Weather",
+  "short_name": "SkyPulse",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0b1220",

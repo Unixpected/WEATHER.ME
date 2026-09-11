@@ -694,9 +694,15 @@ function fallbackToIpLocation(){
 
 function useManualCoords(){
   const errEl = document.getElementById('coordsErr');
+  const latEl = document.getElementById('manualLat');
+  const lonEl = document.getElementById('manualLon');
+  if(!errEl || !latEl || !lonEl){
+    statusEl.textContent = 'Manual coordinates are not part of this interface. Click the map or search for a place instead.';
+    return;
+  }
   errEl.textContent = '';
-  const lat = parseFloat(document.getElementById('manualLat').value);
-  const lon = parseFloat(document.getElementById('manualLon').value);
+  const lat = parseFloat(latEl.value);
+  const lon = parseFloat(lonEl.value);
   if(isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180){
     errEl.textContent = 'Please enter valid numbers (latitude -90 to 90, longitude -180 to 180).';
     return;
@@ -1134,13 +1140,12 @@ async function runForLocation(lat, lon, label){
     document.getElementById('heroCloud').textContent = `${consensusCloud?.toFixed(0) ?? '--'}%`;
     document.getElementById('heroPlace').textContent = `${label}`;
 
-    // Widget gauges
+    // Update widgets that exist in the SkyPulse redesign.
+    // The older UI had separate humidity/feels-like/wind/sun gauge containers;
+    // the redesigned hero presents those values directly, so do not reference
+    // elements that are no longer part of the page.
     document.getElementById('uvValue').textContent = consensusUV !== null ? consensusUV.toFixed(1) : '--';
     document.getElementById('uvGauge').innerHTML = uvGaugeSVG(consensusUV);
-    document.getElementById('humidityGauge').innerHTML = humidityGaugeSVG(consensusHumidity);
-    document.getElementById('realFeelValue').textContent = `${consensusFeels?.toFixed(0) ?? '--'}°`;
-    document.getElementById('realFeelGauge').innerHTML = realFeelGaugeSVG(consensusFeels);
-    document.getElementById('windGauge').innerHTML = windCompassSVG(consensusWind, consensusWindDir);
     document.getElementById('pressureValue').textContent = consensusPressure !== null ? `${consensusPressure.toFixed(0)} mb` : '-- mb';
     document.getElementById('pressureGauge').innerHTML = pressureGaugeSVG(consensusPressure);
 
@@ -1151,8 +1156,6 @@ async function runForLocation(lat, lon, label){
 
     if(SUN_TIMES.length){
       document.getElementById('heroSun').innerHTML = `🌅 Sunrise ${fmtHour(SUN_TIMES[0].sunrise)} &nbsp;·&nbsp; 🌇 Sunset ${fmtHour(SUN_TIMES[0].sunset)}`;
-      document.getElementById('sunsetValue').textContent = fmtHour(SUN_TIMES[0].sunset);
-      document.getElementById('sunArcGauge').innerHTML = sunArcSVG(SUN_TIMES[0].sunrise, SUN_TIMES[0].sunset, new Date());
     }
 
     // Air quality (separate free API) — best effort, degrades quietly if unreachable
@@ -1202,19 +1205,11 @@ async function runForLocation(lat, lon, label){
     else if(spread > 3.5){ confBadge.className = 'badge low'; confBadge.textContent = 'Model Divergence'; }
     else { confBadge.className = 'badge mid'; confBadge.textContent = 'Moderate Confidence'; }
 
-    // Model Consensus visual component
+    // Model consensus is represented by the redesigned forecast chart and
+    // weather-intelligence sections below. Keep the rain-model calculation here
+    // for the chart/insight logic, but do not write to legacy UI containers.
     const rainingModels = MODELS.map((m,i) => ({m, raining: curPrecip[i] !== null && curPrecip[i] !== undefined && curPrecip[i] > 0.1}));
     const rainCount = rainingModels.filter(r=>r.raining).length;
-    document.getElementById('consensusPct').textContent = `${consensusRain ?? 0}%`;
-    document.getElementById('consensusFraction').textContent = `${rainCount} / ${MODELS.length} models agree`;
-    document.getElementById('consensusBarFill').style.width = `${consensusRain ?? 0}%`;
-    document.getElementById('consensusModelList').innerHTML = rainingModels.map(r => `
-      <div class="consensus-model-row">
-        <span class="dot" style="background:${r.m.color};"></span>
-        <span class="cm-name">${r.m.name}</span>
-        <span class="cm-state ${r.raining?'rain':'none'}">${r.raining ? '● Rain' : '○ No rain'}</span>
-      </div>
-    `).join('');
 
     // Weather Intelligence — plain-language takeaways from the real data above
     const insights = [];

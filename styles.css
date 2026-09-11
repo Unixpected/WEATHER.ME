@@ -5,3 +5,59 @@
 @media(max-width:680px){.topbar-inner,.shell{padding-left:14px;padding-right:14px}.shell{padding-top:27px}.hero-intro{display:block}.hero-intro h1{font-size:38px}.hero-status{display:inline-block;margin-top:18px}.main-nav{width:100%;overflow:auto}.nav-item{flex:1;white-space:nowrap;padding:10px 9px}.location-bar{align-items:stretch;flex-direction:column;gap:12px}.location-actions>*{flex:1}.search-line{display:block}.search-line .primary-btn{width:100%;margin-top:8px}.location-map{height:250px}.weather-hero{padding:21px;min-height:640px}.weather-visual{top:20px;right:-25px;transform:scale(.78);opacity:.55}.hero-temperature>span{font-size:78px}.metric-grid{left:21px;right:21px;bottom:21px;grid-template-columns:repeat(2,1fr)}.metric{min-height:78px}.insight-grid{grid-template-columns:1fr}.hour-timeline{display:flex;overflow-x:auto}.hour-card{min-width:145px}.micro-grid{grid-template-columns:1fr 1fr}.tools-hero,.typhoon-hero{display:block;padding:22px}.tools-hero h2,.typhoon-hero h2{font-size:28px}.status-card{margin-top:18px;min-width:0}.planner-route{display:block}.route-line{display:none}.planner-bottom{display:block}.planner-bottom .field{width:auto}.planner-bottom .primary-btn{width:100%}.two-col{grid-template-columns:1fr}.radar-frame iframe{height:430px}.official-alert{align-items:flex-start}.section-heading{align-items:start}.section-note{display:none}.top-actions .theme-btn{width:29px}.hero-actions{flex-wrap:wrap}.hero-action{flex:1}.saved-list{max-height:100px;overflow:auto}}
 [data-theme="light"]{--bg:#edf4fb;--surface:#f7fbff;--surface2:#eef5fb;--surface3:#e5eff8;--text:#102136;--muted:#60758d;--line:rgba(25,65,100,.13);--shadow:0 24px 70px rgba(25,65,100,.12)}[data-theme="light"] .topbar{background:rgba(237,244,251,.8)}[data-theme="light"] .weather-scene{background:radial-gradient(circle at 75% 8%,rgba(80,165,255,.15),transparent 30%),#edf4fb}[data-theme="light"] .card-surface,[data-theme="light"] .weather-hero{background:linear-gradient(145deg,#fff,#edf6fd)}[data-theme="light"] .weather-hero{background:radial-gradient(circle at 85% 20%,rgba(79,202,210,.14),transparent 25%),linear-gradient(135deg,#eaf7ff,#f9fcff)}[data-theme="light"] .metric{background:rgba(255,255,255,.62)}[data-theme="light"] .hour-card,.data-note{background:#fff}[data-theme="light"] .suggestions{background:#fff}[data-theme="light"] .input-wrap,[data-theme="light"] input,[data-theme="light"] select{background:#fff}
 body.wx-rain .rain-layer{opacity:.65}body.wx-cloudy .sun-core{opacity:.35}body.wx-clear-night .sun-core{background:radial-gradient(circle,#c8ddff 0,#9dbfff 30%,rgba(125,162,255,.12) 68%,transparent 70%);opacity:.6}
+
+/* ===== Fix pass: classes app.js generates that had no matching rules, causing
+   unstyled block-stacking in the hour strip, 5-day forecast, minute breakdown,
+   trip checker, and error card. Matches existing SkyPulse tokens/visual language. ===== */
+
+/* Hour strip: was missing flex layout entirely, causing vertical stacking */
+.strip-scroll{display:flex; gap:0; align-items:flex-start; position:relative;}
+.strip-col{flex-shrink:0; text-align:center; padding-top:36px; position:relative; font-family:var(--font);}
+.strip-col .sc-time{font-size:10px; color:var(--muted); font-weight:700;}
+.strip-col .sc-val{font-size:11px; color:var(--accent); font-weight:700; margin-top:2px;}
+.strip-col .sc-icon{font-size:17px; margin-top:5px;}
+.strip-col .sc-temp{font-size:11px; color:var(--muted); margin-top:3px;}
+.strip-col.sc-sunset{color:var(--warn);}
+.strip-svg{position:absolute; top:0; left:0; pointer-events:none;}
+
+/* 5-day forecast rows: was missing flex layout for the bar/label structure */
+.day-row{display:flex; align-items:center; gap:12px;}
+.day-name{width:56px; font-weight:700; font-size:13px; flex-shrink:0; font-family:var(--display);}
+.day-icon{font-size:17px; width:26px; text-align:center; flex-shrink:0;}
+.day-rain{width:38px; font-size:11px; color:var(--accent); flex-shrink:0;}
+.day-bar-wrap{flex:1; display:flex; align-items:center; gap:10px;}
+.day-lo{font-size:12px; color:var(--muted); width:26px; text-align:right; flex-shrink:0;}
+.day-hi{font-size:12px; font-weight:700; width:26px; flex-shrink:0;}
+.day-bar-track{flex:1; height:6px; border-radius:999px; background:var(--surface2); position:relative; overflow:hidden;}
+.day-bar-fill{position:absolute; top:0; bottom:0; border-radius:999px; background:linear-gradient(90deg, var(--accent), var(--warn));}
+
+/* Minute-by-minute breakdown rows: labels/icons/temp had no layout */
+.minute-chunk{border-bottom:1px solid var(--line);}
+.minute-chunk:last-child{border-bottom:0;}
+.minute-row{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+.m-time{width:76px; font-weight:700; font-size:12px; flex-shrink:0; color:var(--text);}
+.m-icon{width:22px; text-align:center; flex-shrink:0; font-size:15px;}
+.m-desc{color:var(--muted); flex:1; min-width:120px; font-size:12px;}
+.m-temp{font-weight:700; font-size:13px; color:var(--text);}
+.chunk-header{display:flex; align-items:center; gap:10px; padding:12px 15px; cursor:pointer; font-weight:700; font-size:13px; flex-wrap:wrap;}
+.chunk-header .chev{margin-left:auto; color:var(--muted); transition:transform .15s;}
+.chunk-header.open .chev{transform:rotate(180deg);}
+.chunk-header .m-desc{font-weight:500;}
+
+/* Trip checker From/To result cards: were rendering as plain unstyled text */
+.trip-detail{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;}
+.trip-point{background:var(--surface2); border:1px solid var(--line); border-radius:14px; padding:14px;}
+@media (max-width:640px){ .trip-detail{grid-template-columns:1fr;} }
+
+/* Error card internals: card had a background but no internal spacing/hierarchy */
+.ec-icon{font-size:28px; margin-bottom:8px;}
+.ec-title{font-weight:800; font-size:15px; margin-bottom:4px; font-family:var(--display);}
+.ec-detail{color:var(--muted); font-size:12px; margin-bottom:14px;}
+
+/* General utility classes used throughout but never defined */
+.legend-box{background:var(--surface2); border:1px solid var(--line); border-radius:14px; padding:12px 14px; font-size:11px; color:var(--muted); line-height:1.6;}
+.legend-box b{color:var(--text);}
+.section-sub{color:var(--muted); font-size:12px; margin:-4px 0 10px; line-height:1.5;}
+.label{color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.08em; font-weight:700;}
+.chip-label{cursor:pointer;}
+.chip-label:hover{color:var(--accent);}

@@ -51,16 +51,6 @@
     <div id="pickedPanel" class="picked-panel card-surface" style="display:none"><div><small>SELECTED ON MAP</small><strong id="pickedName">—</strong></div><div><button class="primary-btn" onclick="confirmPickedLocation()">Use this spot</button><button class="ghost-btn" onclick="savePickedLocation()">☆ Save</button></div></div>
     <div class="map-hint">Click the map for an exact point · <button class="text-btn" onclick="cycleTileProvider()">change map style</button></div>
 
-    <div class="search-panel card-surface" style="margin-top:14px;">
-      <div class="search-head"><div><b>Type coordinates directly</b><span>If GPS or the map won't work on your network, get exact numbers from Google Maps (long-press a spot) and enter them here — this always works.</span></div></div>
-      <div class="two-col">
-        <div class="field"><label>LATITUDE</label><input id="manualLat" type="text" placeholder="e.g. 14.5378"></div>
-        <div class="field"><label>LONGITUDE</label><input id="manualLon" type="text" placeholder="e.g. 120.9986"></div>
-      </div>
-      <button class="primary-btn" onclick="useManualCoords()" style="margin-top:10px;">Use these coordinates</button>
-      <div id="coordsErr" class="err"></div>
-    </div>
-
     <div class="saved-section"><div class="section-heading"><div><span class="eyebrow">YOUR PLACES</span><h2>Saved locations</h2></div></div><div id="savedLocations" class="saved-list"></div></div>
 
     <div id="app" style="display:none">

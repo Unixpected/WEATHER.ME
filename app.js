@@ -1156,6 +1156,8 @@ async function runForLocation(lat, lon, label){
 
     if(SUN_TIMES.length){
       document.getElementById('heroSun').innerHTML = `🌅 Sunrise ${fmtHour(SUN_TIMES[0].sunrise)} &nbsp;·&nbsp; 🌇 Sunset ${fmtHour(SUN_TIMES[0].sunset)}`;
+    } else {
+      document.getElementById('heroSun').textContent = 'Sunrise/sunset unavailable for this location';
     }
 
     // Air quality (separate free API) — best effort, degrades quietly if unreachable

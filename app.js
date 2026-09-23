@@ -1207,6 +1207,7 @@ async function runForLocation(lat, lon, label){
     document.getElementById('heroHumidity').textContent = `${consensusHumidity?.toFixed(0) ?? '--'}%`;
     document.getElementById('heroCloud').textContent = `${consensusCloud?.toFixed(0) ?? '--'}%`;
     document.getElementById('heroPlace').textContent = `${label}`;
+    document.getElementById('weatherIconOrbit').textContent = nowCondition.icon;
 
     // Update widgets that exist in the SkyPulse redesign.
     // The older UI had separate humidity/feels-like/wind/sun gauge containers;

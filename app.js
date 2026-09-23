@@ -1,3 +1,23 @@
+// Escapes text pulled from external APIs (Nominatim place names, GDACS storm names,
+// etc.) before it's interpolated into innerHTML. These values aren't typed by the
+// user, but they originate outside our control and some of them get persisted to
+// localStorage and re-rendered on every load, so treat them as untrusted.
+function escapeHtml(str){
+  return String(str ?? '').replace(/[&<>"']/g, ch => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[ch]));
+}
+
+// Only allow http(s) links through to href attributes — blocks javascript: and other
+// dangerous schemes sneaking in via an external feed (e.g. GDACS report links).
+function safeHref(url){
+  if(!url) return null;
+  try{
+    const u = new URL(url, window.location.href);
+    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
+  }catch(e){ return null; }
+}
+
 const statusEl = document.getElementById('status');
 let CURRENT = null; // {lat, lon, label}
 let map = null;
@@ -738,7 +758,7 @@ function onCityInput(){
       if(!j.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
       lastSuggestions = j;
       box.innerHTML = j.map((r,i) => {
-        const short = r.display_name.split(',').map(s=>s.trim()).slice(0,3).join(', ');
+        const short = escapeHtml(r.display_name.split(',').map(s=>s.trim()).slice(0,3).join(', '));
         return `<div class="suggestion-item" onmousedown="selectSuggestionByIndex(${i})">${short}</div>`;
       }).join('');
       box.style.display = 'block';
@@ -817,7 +837,7 @@ function renderSavedLocations(){
   }
   el.innerHTML = arr.map((s,i) => `
     <div class="saved-chip">
-      <span class="chip-label" onclick="loadSavedLocation(${i})">📍 ${s.label}</span>
+      <span class="chip-label" onclick="loadSavedLocation(${i})">📍 ${escapeHtml(s.label)}</span>
       <button class="chip-del" onclick="deleteSavedLocation(${i})" title="Remove">✕</button>
     </div>
   `).join('');
@@ -915,7 +935,7 @@ async function onMapClick(e){
     pickedLoc = {lat, lon, label:null};
     const name = await reverseGeocode(lat, lon);
     pickedLoc.label = name;
-    document.getElementById('pickedName').innerHTML = `📍 <b>${name}</b> (${lat.toFixed(4)}, ${lon.toFixed(4)})`;
+    document.getElementById('pickedName').innerHTML = `📍 <b>${escapeHtml(name)}</b> (${lat.toFixed(4)}, ${lon.toFixed(4)})`;
   } else {
     if(destMarker) map.removeLayer(destMarker);
     destMarker = L.marker([lat, lon]).addTo(map).bindPopup('Destination').openPopup();
@@ -985,7 +1005,7 @@ function onTripInput(which){
       if(!j.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
       tripLastSuggestions[which] = j;
       box.innerHTML = j.map((r,i) => {
-        const short = r.display_name.split(',').map(s=>s.trim()).slice(0,3).join(', ');
+        const short = escapeHtml(r.display_name.split(',').map(s=>s.trim()).slice(0,3).join(', '));
         return `<div class="suggestion-item" onmousedown="selectTripSuggestion('${which}',${i})">${short}</div>`;
       }).join('');
       box.style.display = 'block';
@@ -1207,7 +1227,6 @@ async function runForLocation(lat, lon, label){
     document.getElementById('heroHumidity').textContent = `${consensusHumidity?.toFixed(0) ?? '--'}%`;
     document.getElementById('heroCloud').textContent = `${consensusCloud?.toFixed(0) ?? '--'}%`;
     document.getElementById('heroPlace').textContent = `${label}`;
-    document.getElementById('weatherIconOrbit').textContent = nowCondition.icon;
 
     // Update widgets that exist in the SkyPulse redesign.
     // The older UI had separate humidity/feels-like/wind/sun gauge containers;
@@ -1518,9 +1537,9 @@ async function loadActiveTyphoons(){
       return (rank[lvl]||0) > (rank[(w.properties?.alertlevel||'Green').toLowerCase()]||0) ? f : w;
     }, feats[0]);
 
-    const hLevel = (headline.properties?.alertlevel || 'Green');
-    const hName = headline.properties?.name || headline.properties?.eventname || 'Tropical cyclone tracked';
-    const isSevere = hLevel.toLowerCase() !== 'green';
+    const hLevel = escapeHtml(headline.properties?.alertlevel || 'Green');
+    const hName = escapeHtml(headline.properties?.name || headline.properties?.eventname || 'Tropical cyclone tracked');
+    const isSevere = (headline.properties?.alertlevel || 'Green').toLowerCase() !== 'green';
     const distText = headline.__distanceKm !== null
       ? `~${Math.round(headline.__distanceKm).toLocaleString()} km from your location`
       : (refLoc ? 'Distance unavailable for this system' : 'Load a location on the Forecast tab to see distance');
@@ -1537,7 +1556,7 @@ async function loadActiveTyphoons(){
       const p = f.properties || {};
       const level = (p.alertlevel || 'Green');
       const dotColor = level.toLowerCase() === 'red' ? 'var(--bad)' : level.toLowerCase() === 'orange' ? 'var(--warn)' : 'var(--good)';
-      const name = p.name || p.eventname || 'Unnamed system';
+      const name = escapeHtml(p.name || p.eventname || 'Unnamed system');
 
       const fromDate = p.fromdate ? new Date(p.fromdate) : null;
       const toDate = p.todate ? new Date(p.todate) : null;
@@ -1546,15 +1565,15 @@ async function loadActiveTyphoons(){
       if(fromDate && toDate) dateRangeText = `Tracked ${dateFmt(fromDate)} – ${dateFmt(toDate)}`;
       else if(fromDate) dateRangeText = `Tracked since ${dateFmt(fromDate)}`;
 
-      const country = p.country || p.iso3 || '';
-      const reportUrl = p.url?.report || p.url?.details || p.url?.geometry || null;
+      const country = escapeHtml(p.country || p.iso3 || '');
+      const reportUrl = safeHref(p.url?.report || p.url?.details || p.url?.geometry || null);
       const distLabel = f.__distanceKm !== null ? `📍 ~${Math.round(f.__distanceKm).toLocaleString()} km from you` : '';
 
       return `<div style="padding:8px 0; border-bottom:1px solid var(--border);">
         <div style="display:flex; align-items:center; gap:8px;">
           <span class="dot" style="background:${dotColor};"></span>
           <span style="font-weight:600;">🌀 ${name}</span>
-          <span style="color:var(--muted); margin-left:auto; font-size:.78rem;">${level} alert</span>
+          <span style="color:var(--muted); margin-left:auto; font-size:.78rem;">${escapeHtml(level)} alert</span>
         </div>
         <div style="color:var(--muted); font-size:.75rem; margin-top:3px; margin-left:17px;">
           ${distLabel}${dateRangeText ? (distLabel?' · ':'')+dateRangeText : ''}${country ? ' · Affecting: ' + country : ''}

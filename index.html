@@ -112,24 +112,38 @@ function sunGlow(cx=120, cy=95, r=46, id='g1'){
   return `
     <defs>
       <radialGradient id="${id}" cx="50%" cy="50%" r="50%">
-        <stop offset="0%" stop-color="#ffe28a" stop-opacity="0.9"/>
-        <stop offset="45%" stop-color="#f5c451" stop-opacity="0.45"/>
+        <stop offset="0%" stop-color="#ffe28a" stop-opacity="0.95"/>
+        <stop offset="40%" stop-color="#f5c451" stop-opacity="0.5"/>
         <stop offset="100%" stop-color="#f5c451" stop-opacity="0"/>
       </radialGradient>
     </defs>
-    <circle cx="${cx}" cy="${cy}" r="${r*2.1}" fill="url(#${id})"/>
+    <circle cx="${cx}" cy="${cy}" r="${r*2.3}" fill="url(#${id})"/>
   `;
+}
+function sunRays(cx=120, cy=95, r=44, id='rays1'){
+  let rays = '';
+  const count = 12;
+  for(let i=0;i<count;i++){
+    const a = (Math.PI*2/count)*i;
+    const inner = r+10, outer = r+ (i%2===0 ? 26 : 18);
+    const x1 = cx+Math.cos(a)*inner, y1 = cy+Math.sin(a)*inner;
+    const x2 = cx+Math.cos(a)*outer, y2 = cy+Math.sin(a)*outer;
+    rays += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#ffd97a" stroke-width="3.5" stroke-linecap="round" opacity="0.85"/>`;
+  }
+  return `<g id="${id}">${rays}</g>`;
 }
 function sunDisc(cx=120, cy=95, r=44){
   return `
     <defs>
-      <radialGradient id="sunFace" cx="35%" cy="30%" r="70%">
-        <stop offset="0%" stop-color="#fff6d6"/>
-        <stop offset="55%" stop-color="#ffd65c"/>
-        <stop offset="100%" stop-color="#f5a623"/>
+      <radialGradient id="sunFace" cx="35%" cy="28%" r="75%">
+        <stop offset="0%" stop-color="#fffaea"/>
+        <stop offset="35%" stop-color="#ffe28a"/>
+        <stop offset="70%" stop-color="#ffc247"/>
+        <stop offset="100%" stop-color="#f29a1e"/>
       </radialGradient>
     </defs>
     <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#sunFace)"/>
+    <ellipse cx="${cx-r*0.32}" cy="${cy-r*0.35}" rx="${r*0.38}" ry="${r*0.24}" fill="#fffef2" opacity="0.55"/>
   `;
 }
 function moonGlow(cx=120, cy=95, id='mg1'){
@@ -145,33 +159,45 @@ function moonGlow(cx=120, cy=95, id='mg1'){
   `;
 }
 function moonDisc(cx=120, cy=95, r=42){
-  // crescent via two circles
+  // crescent via mask + soft craters for depth
   return `
     <defs>
-      <radialGradient id="moonFace" cx="35%" cy="30%" r="75%">
+      <radialGradient id="moonFace" cx="32%" cy="28%" r="80%">
         <stop offset="0%" stop-color="#ffffff"/>
-        <stop offset="60%" stop-color="#dbe6f5"/>
-        <stop offset="100%" stop-color="#aebedb"/>
+        <stop offset="55%" stop-color="#e3ecfa"/>
+        <stop offset="100%" stop-color="#a9bbdc"/>
       </radialGradient>
       <mask id="moonMask">
         <rect x="0" y="0" width="240" height="190" fill="white"/>
-        <circle cx="${cx+18}" cy="${cy-10}" r="${r-2}" fill="black"/>
+        <circle cx="${cx+16}" cy="${cy-12}" r="${r-1}" fill="black"/>
       </mask>
     </defs>
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#moonFace)" mask="url(#moonMask)"/>
+    <g mask="url(#moonMask)">
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#moonFace)"/>
+      <circle cx="${cx-12}" cy="${cy-6}" r="7" fill="#c3d1ec" opacity="0.55"/>
+      <circle cx="${cx+2}" cy="${cy+14}" r="4.5" fill="#c3d1ec" opacity="0.5"/>
+      <circle cx="${cx-6}" cy="${cy+16}" r="3" fill="#c3d1ec" opacity="0.4"/>
+    </g>
   `;
 }
 function star(x,y,s){
   return `<path d="M${x} ${y-s} L${x+s*0.28} ${y-s*0.28} L${x+s} ${y} L${x+s*0.28} ${y+s*0.28} L${x} ${y+s} L${x-s*0.28} ${y+s*0.28} L${x-s} ${y} L${x-s*0.28} ${y-s*0.28} Z" fill="#dbe6ff" opacity="0.85"/>`;
 }
-function cloudPath(x=0,y=0,scale=1,fill='#ffffff'){
+function cloudPath(x=0,y=0,scale=1,fill='#ffffff',id=''){
+  const gid = 'cloudShade'+(id||Math.random().toString(36).slice(2));
   return `<g transform="translate(${x},${y}) scale(${scale})">
+    <defs>
+      <linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#ffffff"/>
+        <stop offset="100%" stop-color="${fill}"/>
+      </linearGradient>
+    </defs>
     <path d="M20 55 C4 55 -6 42 3 29 C6 15 24 6 38 12 C46 -2 70 -3 80 11 C97 9 112 20 111 35 C121 38 122 55 106 55 Z"
-      fill="${fill}"/>
+      fill="url(#${gid})"/>
   </g>`;
 }
 function cloudShadow(x=0,y=0,scale=1){
-  return cloudPath(x,y,scale,'#c7d2e0');
+  return cloudPath(x,y,scale,'#a9b7c9');
 }
 function raindrop(x,y){
   return `<path d="M${x} ${y} c-4 5 -6 9 -6 12 a6 6 0 0 0 12 0 c0 -3 -2 -7 -6 -12z" fill="#5aa7ff"/>`;
@@ -190,14 +216,14 @@ function bolt(x,y){
 function buildScene(id){
   switch(id){
     case 'clear-day':
-      return svgWrap(sunGlow()+sunDisc());
+      return svgWrap(sunGlow()+sunRays()+sunDisc());
 
     case 'clear-night':
       return svgWrap(moonGlow()+star(58,40,4)+star(178,55,3)+star(200,110,4)+star(45,120,3)+moonDisc());
 
     case 'partly-day':
       return svgWrap(
-        sunGlow(150,70,40)+sunDisc(150,70,36)+
+        sunGlow(150,70,40)+sunRays(150,70,36,'rays2')+sunDisc(150,70,36)+
         cloudShadow(35,86,1.15)+cloudPath(28,80,1.15)
       );
 

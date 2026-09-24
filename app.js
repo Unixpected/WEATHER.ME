@@ -642,10 +642,10 @@ function renderHourStrip(times, temps, winds, rainPcts, clouds, sunTimes){
   container.style.position = 'relative';
 }
 
-function renderHourCards(finePoints){
-  const container = document.getElementById('hourCardsRow');
-  if(!finePoints.length){ container.innerHTML = ''; return; }
-
+// Groups the 15-min points into hour buckets — shared by the hour-card row and
+// the minute-detail filter below so "6 PM" always means the same set of points
+// in both places.
+function groupFinePointsByHour(finePoints){
   const hourGroups = [];
   finePoints.forEach((p, idx) => {
     const d = new Date(p.time);
@@ -654,6 +654,14 @@ function renderHourCards(finePoints){
     if(!grp){ grp = {key:hourKey, points:[], firstIdx:idx}; hourGroups.push(grp); }
     grp.points.push(p);
   });
+  return hourGroups;
+}
+
+function renderHourCards(finePoints){
+  const container = document.getElementById('hourCardsRow');
+  if(!finePoints.length){ container.innerHTML = ''; return; }
+
+  const hourGroups = groupFinePointsByHour(finePoints);
 
   container.innerHTML = hourGroups.map(g => {
     const first = g.points[0];
@@ -664,7 +672,7 @@ function renderHourCards(finePoints){
     const cond = conditionLabel(mmPerHour, avgCloud, maxAgreement, isDaytime(new Date(first.time)));
     return `
       <div class="hour-card" tabindex="0" role="button" aria-label="Show details for ${fmtHour(first.time)}"
-        onclick="jumpToHourBlock(${g.firstIdx})" onkeypress="if(event.key==='Enter') jumpToHourBlock(${g.firstIdx})">
+        onclick="showHourDetails('${g.key}')" onkeypress="if(event.key==='Enter') showHourDetails('${g.key}')">
         <div class="hc-time">${fmtHour(first.time)}</div>
         <div class="hc-icon">${cond.icon}</div>
         <div class="hc-temp">${avgTemp.toFixed(0)}°</div>
@@ -682,25 +690,59 @@ function toggleDetailsPanel(forceOpen){
   btn.textContent = shouldOpen ? 'Hide per-minute breakdown ▴' : 'Show per-minute breakdown ▾';
 }
 
-function jumpToHourBlock(idx){
-  toggleDetailsPanel(true);
-  setTimeout(() => {
-    const header = document.getElementById(`mb${idx}-header`);
-    if(header){
-      if(!header.classList.contains('open')) toggleChunk(`mb${idx}`);
-      header.scrollIntoView({behavior:'smooth', block:'start'});
-    }
-  }, 50);
+// The generic "Show 15-minute details" button (as opposed to clicking a specific
+// hour card) used to dump every hour in the window at once. Now it opens on
+// whichever hour is already selected, or the soonest hour if none is yet.
+function toggleMinuteDetailsDefault(){
+  const panel = document.getElementById('detailsPanel');
+  const willOpen = !panel.classList.contains('open');
+  toggleDetailsPanel(willOpen);
+  if(willOpen){
+    const hourGroups = groupFinePointsByHour(lastFinePoints);
+    const key = activeMinuteHourKey || (hourGroups[0] && hourGroups[0].key);
+    if(key) selectMinuteHour(key);
+  }
 }
 
 let lastFinePoints = [];
+let activeMinuteHourKey = null;
 
-function renderMinuteList(finePoints){
-  lastFinePoints = finePoints;
+// Opens the per-minute panel already filtered to just the hour that was clicked,
+// instead of dumping every hour in the forecast window into one long list.
+function showHourDetails(hourKey){
+  toggleDetailsPanel(true);
+  selectMinuteHour(hourKey);
+  setTimeout(() => {
+    document.getElementById('detailsPanel').scrollIntoView({behavior:'smooth', block:'start'});
+  }, 50);
+}
+
+function selectMinuteHour(hourKey){
+  activeMinuteHourKey = hourKey;
+  const hourGroups = groupFinePointsByHour(lastFinePoints);
+  renderHourPicker(hourGroups, hourKey);
+  const group = hourGroups.find(g => g.key === hourKey);
+  renderMinuteList(group ? group.points : lastFinePoints, group ? group.firstIdx : 0);
+}
+
+// Small row of hour pills inside the details panel so you can jump between
+// hours without scrolling back up to the timeline above.
+function renderHourPicker(hourGroups, activeKey){
+  const picker = document.getElementById('minuteHourPicker');
+  if(!picker) return;
+  picker.innerHTML = hourGroups.map(g => {
+    const first = g.points[0];
+    return `<button class="hour-pill ${g.key===activeKey?'active':''}" onclick="selectMinuteHour('${g.key}')">${fmtHour(first.time)}</button>`;
+  }).join('');
+}
+
+function renderMinuteList(finePoints, baseIdx){
   const container = document.getElementById('minuteList');
+  baseIdx = baseIdx || 0;
   if(!finePoints.length){ container.innerHTML = '<div class="minute-row">No high-resolution data available for this location.</div>'; return; }
 
-  container.innerHTML = finePoints.map((p, idx) => {
+  container.innerHTML = finePoints.map((p, i) => {
+    const idx = baseIdx + i;
     const mmPerHour = p.precipMm * 4;
     const startTime = new Date(p.time);
     const label = conditionLabel(mmPerHour, p.cloud, p.agreement?.pct ?? null, isDaytime(startTime));
@@ -711,7 +753,7 @@ function renderMinuteList(finePoints){
     const confPct = ag.pct !== null ? `${ag.pct}% chance` : '—';
     const blockId = `mb${idx}`;
 
-    const minuteRows = buildMinutesForPoint(finePoints, idx).map(row => {
+    const minuteRows = buildMinutesForPoint(lastFinePoints, idx).map(row => {
       const rowLabel = conditionLabel(row.mmPerHour, p.cloud, ag.pct, isDaytime(row.time));
       return `
         <div class="minute-row">
@@ -724,14 +766,14 @@ function renderMinuteList(finePoints){
 
     return `
       <div class="minute-chunk">
-        <div class="chunk-header ${idx===0?'open':''}" id="${blockId}-header" onclick="toggleChunk('${blockId}')">
+        <div class="chunk-header ${i===0?'open':''}" id="${blockId}-header" onclick="toggleChunk('${blockId}')">
           <span class="m-time" style="width:auto;">${timeLabel}</span>
           <span class="m-icon">${label.icon}</span>
           <span class="m-desc">${label.text}${ag.pct !== null && ag.count > 0 ? ' · '+confPct+' of rain' : ''}</span>
           <span class="m-temp">${p.temp.toFixed(1)}°</span>
           <span class="chev">▾</span>
         </div>
-        <div class="chunk-body ${idx===0?'open':''}" id="${blockId}-body">
+        <div class="chunk-body ${i===0?'open':''}" id="${blockId}-body">
           <div class="legend-box" style="margin:8px 12px 0; border-radius:8px;">
             ${confidenceLine(ag)} Cloud cover: ${p.cloud !== null && p.cloud !== undefined ? Math.round(p.cloud)+'%' : '—'} · ${p.precipMm.toFixed(2)} mm this 15-min window.
           </div>
@@ -1445,7 +1487,10 @@ async function runForLocation(lat, lon, label){
 
     const fineData = await fetchFineResolution(lat, lon);
     const finePoints = buildFineNowcast(fineData, hourly, startIdx);
+    lastFinePoints = finePoints;
+    activeMinuteHourKey = null;
     renderMinuteList(finePoints);
+    renderHourPicker(groupFinePointsByHour(finePoints), null);
     renderHourCards(finePoints);
 
     loadMicroGrid(lat, lon);

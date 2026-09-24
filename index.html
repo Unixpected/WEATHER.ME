@@ -1,105 +1,265 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SkyPulse Weather — Local Weather Intelligence</title>
-<link rel="manifest" href="manifest.json"><link rel="icon" href="icon.svg" type="image/svg+xml">
-<meta name="theme-color" content="#07111f"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Local Conditions</title>
+<style>
+  :root{
+    --bg1:#0b1420; --bg2:#0e1a26; --card:#101c29; --card-line:rgba(255,255,255,.06);
+    --text:#eef3f8; --muted:#8a97a6; --accent-green:#3ddc84; --accent-amber:#f5a524;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:
+      linear-gradient(160deg, var(--bg1), var(--bg2)),
+      repeating-linear-gradient(115deg, rgba(255,255,255,.02) 0px, rgba(255,255,255,.02) 1px, transparent 1px, transparent 60px);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    color:var(--text); padding:24px;
+  }
+  .wrap{width:min(94vw,460px);}
+  .card{
+    background:linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,0)), var(--card);
+    border:1px solid var(--card-line); border-radius:22px; padding:22px 20px 16px;
+    box-shadow:0 20px 50px -20px rgba(0,0,0,.6);
+  }
+  .top-row{display:flex; justify-content:flex-end; margin-bottom:14px;}
+  .aqi-pill{
+    display:flex; align-items:center; gap:6px; background:rgba(255,255,255,.05);
+    border:1px solid rgba(255,255,255,.08); padding:6px 12px; border-radius:999px; font-size:12px;
+  }
+  .aqi-pill .leaf{color:var(--accent-green); font-size:13px;}
+  .aqi-pill .lvl{color:var(--accent-amber); font-weight:600; margin-left:2px;}
+
+  .icon-stage{
+    display:flex; align-items:center; justify-content:center; margin:6px 0 14px; height:190px; position:relative;
+  }
+  .icon-stage svg{max-height:190px; overflow:visible;}
+
+  .label{
+    text-align:center; letter-spacing:.14em; font-size:11px; color:var(--muted);
+    font-weight:700; text-transform:uppercase; margin-bottom:18px;
+  }
+
+  .controls{
+    display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-bottom:18px;
+  }
+  .controls button{
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); color:var(--muted);
+    padding:7px 12px; border-radius:999px; font-size:11.5px; cursor:pointer; transition:.15s;
+  }
+  .controls button.active{ background:rgba(255,255,255,.12); color:var(--text); border-color:rgba(255,255,255,.2); }
+  .controls button:hover{ color:var(--text); }
+
+  .stats{ display:flex; gap:10px; flex-wrap:wrap; }
+  .stat{
+    flex:1 1 130px; background:rgba(255,255,255,.03); border:1px solid var(--card-line);
+    border-radius:16px; padding:14px 14px 12px;
+  }
+  .stat .row{display:flex; justify-content:space-between; align-items:flex-start;}
+  .stat .k{font-size:10.5px; letter-spacing:.08em; color:var(--muted); font-weight:700; text-transform:uppercase;}
+  .stat .v{font-size:20px; font-weight:700; margin-top:8px;}
+  .gauge{width:34px;height:34px;}
+
+  @media (max-width:420px){ .icon-stage{height:150px;} .icon-stage svg{max-height:150px;} }
+</style>
 </head>
 <body>
-<div class="weather-scene" aria-hidden="true"><div class="orb orb-a"></div><div class="orb orb-b"></div><div class="cloud cloud-a"></div><div class="cloud cloud-b"></div><div class="rain-layer"></div></div>
-<header class="topbar">
-  <div class="topbar-inner">
-    <a class="brand" href="#"><span class="brand-mark">✦</span><span><strong>SkyPulse</strong><small>Local weather intelligence</small></span></a>
-    <div class="top-actions">
-      <button class="icon-btn" onclick="useMyLocation()" title="Use my location" aria-label="Use my location">⌖</button>
-      <div class="theme-toggle" role="group" aria-label="Theme"><button id="themeDark" class="theme-btn" onclick="setTheme('dark')">☾</button><button id="themeLight" class="theme-btn" onclick="setTheme('light')">☼</button><button id="themeSystem" class="theme-btn" onclick="setTheme('system')">◐</button></div>
-    </div>
-  </div>
-</header>
-<main class="shell">
-  <section class="hero-intro">
-    <div><span class="eyebrow">LIVE LOCAL FORECAST</span><h1>Weather, without the guesswork.</h1><p>Six independent forecast models, short-term nowcast, local variation and practical recommendations in one view.</p></div>
-    <div class="hero-status"><span class="live-dot"></span><span>Live forecast</span></div>
-  </section>
-
-  <nav class="main-nav" aria-label="Main navigation">
-    <button id="tabForecastBtn" class="nav-item tab-active" onclick="switchTab('forecast')"><span>◉</span> Overview</button>
-    <button id="tabToolsBtn" class="nav-item" onclick="switchTab('tools')"><span>⌘</span> Planner & Data</button>
-    <button id="tabTyphoonBtn" class="nav-item" onclick="switchTab('typhoon')"><span>◌</span> Typhoon Radar</button>
-  </nav>
-
-  <div id="status" class="loading-message">Preparing your forecast…</div>
-
-  <div id="forecastTab">
-    <section class="location-bar card-surface">
-      <div class="location-main"><span class="location-pin">⌖</span><div><small>FORECAST LOCATION</small><strong id="locationLabel">Choose a location</strong></div></div>
-      <div class="location-actions"><button class="primary-btn" onclick="useMyLocation()">Use my location</button><button class="ghost-btn" onclick="document.getElementById('manualBox').style.display='block';document.getElementById('manualCity').focus()">Search</button></div>
-    </section>
-    <div id="manualBox" class="search-panel card-surface" style="display:none">
-      <div class="search-head"><div><b>Find a place</b><span>Search a city, street, barangay or landmark.</span></div><button class="close-btn" onclick="document.getElementById('manualBox').style.display='none'">×</button></div>
-      <div class="search-line"><div class="search-wrap"><span>⌕</span><input id="manualCity" type="text" placeholder="e.g. Libertad, Pasay or Taft Avenue, Manila" oninput="onCityInput()" onblur="hideSuggestionsDelayed()"><div id="citySuggestions" class="suggestions" style="display:none"></div></div><button class="primary-btn" onclick="searchCity()">Find weather</button></div>
-      <div id="manualErr" class="err"></div>
+<div class="wrap">
+  <div class="card">
+    <div class="top-row">
+      <div class="aqi-pill"><span class="leaf">🍃</span> AQI 70 · <span class="lvl">Moderate</span></div>
     </div>
 
-    <div id="map" class="location-map"></div>
-    <div id="pickedPanel" class="picked-panel card-surface" style="display:none"><div><small>SELECTED ON MAP</small><strong id="pickedName">—</strong></div><div><button class="primary-btn" onclick="confirmPickedLocation()">Use this spot</button><button class="ghost-btn" onclick="savePickedLocation(this)">☆ Save</button></div></div>
-    <div class="map-hint">Click the map for an exact point · <button class="text-btn" onclick="cycleTileProvider()">change map style</button></div>
+    <div class="icon-stage" id="iconStage"></div>
+    <div class="label">Local Conditions</div>
 
-    <div class="saved-section"><div class="section-heading"><div><span class="eyebrow">YOUR PLACES</span><h2>Saved locations</h2></div></div><div id="savedLocations" class="saved-list"></div></div>
+    <div class="controls" id="controls"></div>
 
-    <div id="app" style="display:none">
-      <section class="weather-hero" id="weatherHero">
-        <div class="hero-main">
-          <div class="hero-meta"><span class="live-pill"><i></i> NOW</span><span id="confBadge" class="badge mid">Loading confidence</span><span id="lastUpdated" class="updated-chip"></span></div>
-          <div class="hero-location" id="heroPlace">—</div>
-          <div class="hero-temperature"><span id="heroTemp">--°</span><div><strong id="heroCondition">Loading…</strong><small>Feels like <b id="heroFeels">--°</b></small></div></div>
-          <div class="hero-sun" id="heroSun">—</div>
-          <div class="hero-actions"><button class="hero-action" onclick="reopenLocationPicker()">⌖ Change location</button><button class="hero-action" onclick="saveCurrentLocation(this)">☆ Save</button></div>
-        </div>
-        <div class="weather-visual"><div class="sun-core"></div><div class="weather-icon-orbit">☁</div><div class="visual-caption">LOCAL CONDITIONS</div><div class="aqi-chip" id="aqiChip">🍃 AQI —</div></div>
-        <div class="metric-grid">
-          <div class="metric"><span>RAIN CHANCE</span><strong id="heroRain">--%</strong><i>☂</i></div>
-          <div class="metric"><span>HUMIDITY</span><strong id="heroHumidity">--%</strong><i>◌</i></div>
-          <div class="metric"><span>WIND</span><strong id="heroWind">-- km/h</strong><i>≋</i></div>
-          <div class="metric"><span>CLOUD COVER</span><strong id="heroCloud">--%</strong><i>☁</i></div>
-          <div class="metric"><span>UV INDEX</span><strong id="uvValue">--</strong><i>☀</i><div id="uvGauge" class="metric-gauge"></div></div>
-          <div class="metric"><span>PRESSURE</span><strong id="pressureValue">-- mb</strong><i>⌁</i><div id="pressureGauge" class="metric-gauge"></div></div>
-        </div>
-      </section>
-
-      <section class="section-block intelligence-block"><div class="section-heading"><div><span class="eyebrow">WHAT MATTERS</span><h2>Your weather plan</h2></div><span class="section-note">Updated from the forecast</span></div><div id="insightList" class="insight-grid"></div></section>
-
-      <section class="section-block"><div class="section-heading"><div><span class="eyebrow">NEXT HOURS</span><h2>Rain & temperature timeline</h2></div><span class="section-note">Tap an hour for details</span></div><div id="hourCardsRow" class="hour-timeline"></div><button id="detailsToggleBtn" class="expand-btn" onclick="toggleDetailsPanel()" aria-expanded="false">Show 15-minute details <span>↓</span></button><div id="detailsPanel" class="details-panel"><div id="minuteList" class="minute-list"></div></div></section>
-
-      <section class="section-block"><div class="section-heading"><div><span class="eyebrow">MICRO-GRID</span><h2>What changes around you?</h2></div><span class="section-note">~5 km in each direction</span></div><div id="gridPoints" class="micro-grid"></div></section>
-
-      <section class="section-block"><div class="section-heading"><div><span class="eyebrow">DAY AHEAD</span><h2>24-hour outlook</h2></div></div><div class="forecast-strip-shell"><div id="hourStrip" class="strip-scroll"></div></div></section>
-
-      <section class="section-block"><div class="section-heading"><div><span class="eyebrow">EXTENDED OUTLOOK</span><h2>Next 5 days</h2></div></div><div id="fiveDayList" class="five-day"></div></section>
+    <div class="stats">
+      <div class="stat">
+        <div class="row"><span class="k">UV Index</span><span>❄️</span></div>
+        <div class="v">5.7</div>
+      </div>
+      <div class="stat">
+        <div class="row"><span class="k">Pressure</span><span>➤</span></div>
+        <div class="v">1010 mb</div>
+      </div>
     </div>
   </div>
+</div>
 
-  <div id="toolsTab" style="display:none">
-    <section class="tools-hero card-surface"><span class="eyebrow">TRAVEL ASSISTANT</span><h2>Plan before you go.</h2><p>Compare weather at your starting point and destination for the time you expect to travel.</p></section>
-    <section class="planner-card card-surface"><div class="planner-route"><div class="field"><label>FROM</label><div class="input-wrap"><span>●</span><input id="tripFrom" type="text" placeholder="Current forecast location" oninput="onTripInput('from')" onblur="hideTripSuggestionsDelayed('from')"><div id="tripFromSuggestions" class="suggestions" style="display:none"></div></div></div><div class="route-line"></div><div class="field"><label>TO</label><div class="input-wrap"><span>⌖</span><input id="tripTo" type="text" placeholder="Destination" oninput="onTripInput('to')" onblur="hideTripSuggestionsDelayed('to')"><div id="tripToSuggestions" class="suggestions" style="display:none"></div></div></div></div><div class="planner-bottom"><div class="field"><label>DEPARTURE</label><select id="tripWhen"><option value="0">Now</option><option value="1">In 1 hour</option><option value="2">In 2 hours</option><option value="3">In 3 hours</option><option value="5">In 5 hours</option></select></div><button class="primary-btn large" onclick="checkTrip()">Check my trip →</button></div><div id="tripResult" class="trip-result"></div></section>
-    <section class="section-block"><div class="section-heading"><div><span class="eyebrow">FORECAST MODELS</span><h2>Model comparison</h2></div></div><div class="chart-card card-surface"><canvas id="chart" height="110"></canvas><div id="chartLegend" class="legend-row"></div></div><div id="modelLegend" class="data-note"></div></section>
-  </div>
+<script>
+/* ---------- Condition definitions ---------- */
+const CONDITIONS = [
+  { id:'clear-day',    label:'Sunny' },
+  { id:'clear-night',  label:'Clear Night' },
+  { id:'partly-day',   label:'Partly Cloudy' },
+  { id:'partly-night', label:'Partly Cloudy Night' },
+  { id:'cloudy',       label:'Cloudy' },
+  { id:'rain',         label:'Rainy' },
+  { id:'thunder',      label:'Thunderstorm' },
+  { id:'snow',         label:'Snowy' },
+];
 
-  <div id="typhoonTab" style="display:none">
-    <section class="typhoon-hero"><div><span class="eyebrow">PHILIPPINE WEATHER WATCH</span><h2>Typhoon & wind radar</h2><p>Track active tropical cyclones and broad wind conditions. For Philippine warnings, always verify with PAGASA.</p></div><div id="typhoonStatusCard" class="status-card"><span class="status-dot"></span><div><b>Checking active systems…</b><small>Public global feed</small></div></div></section>
-    <div class="radar-actions"><button class="primary-btn" onclick="centerTyphoonOnMyLocation()">⌖ Center on my location</button><button class="ghost-btn" onclick="loadActiveTyphoons()">↻ Refresh systems</button></div>
-    <div id="typhoonMapWrap" class="radar-frame"><iframe id="typhoonFrame" title="Typhoon and wind speed map" width="100%" height="560" frameborder="0" loading="lazy"></iframe></div>
-    <section class="storm-panel card-surface"><div class="section-heading"><div><span class="eyebrow">GLOBAL SYSTEMS</span><h2>Active tropical cyclones</h2></div></div><div id="typhoonList">Loading…</div></section>
-    <div class="official-alert"><div class="official-icon">!</div><div><b>Official Philippine alerts</b><p>International feeds are useful for tracking, but Philippine cyclone names and warning signals should be checked against PAGASA.</p><a href="https://www.pagasa.dost.gov.ph/tropical-cyclone/severe-weather-bulletin" target="_blank" rel="noopener">Open PAGASA Severe Weather Bulletin →</a></div></div>
-    <section class="map-settings card-surface"><div class="section-heading"><div><span class="eyebrow">MAP VIEW</span><h2>Remember radar position</h2></div></div><div class="two-col"><div class="field"><label>LATITUDE</label><input id="typhoonLat" placeholder="14.5378"></div><div class="field"><label>LONGITUDE</label><input id="typhoonLon" placeholder="120.9986"></div></div><div class="field"><label>ZOOM</label><input id="typhoonZoom" placeholder="6"></div><button class="primary-btn" onclick="saveTyphoonView(this)">Save map view</button></section>
-  </div>
-</main>
-<footer class="footer">SkyPulse · Open-Meteo models · OpenStreetMap · Windy · GDACS · PAGASA official source for Philippine warnings</footer>
-<script src="app.js?v=20260911"></script>
-</body></html>
+/* ---------- SVG builders ---------- */
+function svgWrap(inner, vb='0 0 240 190'){
+  return `<svg viewBox="${vb}" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
+}
+
+function sunGlow(cx=120, cy=95, r=46, id='g1'){
+  return `
+    <defs>
+      <radialGradient id="${id}" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#ffe28a" stop-opacity="0.9"/>
+        <stop offset="45%" stop-color="#f5c451" stop-opacity="0.45"/>
+        <stop offset="100%" stop-color="#f5c451" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <circle cx="${cx}" cy="${cy}" r="${r*2.1}" fill="url(#${id})"/>
+  `;
+}
+function sunDisc(cx=120, cy=95, r=44){
+  return `
+    <defs>
+      <radialGradient id="sunFace" cx="35%" cy="30%" r="70%">
+        <stop offset="0%" stop-color="#fff6d6"/>
+        <stop offset="55%" stop-color="#ffd65c"/>
+        <stop offset="100%" stop-color="#f5a623"/>
+      </radialGradient>
+    </defs>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#sunFace)"/>
+  `;
+}
+function moonGlow(cx=120, cy=95, id='mg1'){
+  return `
+    <defs>
+      <radialGradient id="${id}" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#cfe3ff" stop-opacity="0.55"/>
+        <stop offset="45%" stop-color="#8fb4ff" stop-opacity="0.25"/>
+        <stop offset="100%" stop-color="#8fb4ff" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <circle cx="${cx}" cy="${cy}" r="96" fill="url(#${id})"/>
+  `;
+}
+function moonDisc(cx=120, cy=95, r=42){
+  // crescent via two circles
+  return `
+    <defs>
+      <radialGradient id="moonFace" cx="35%" cy="30%" r="75%">
+        <stop offset="0%" stop-color="#ffffff"/>
+        <stop offset="60%" stop-color="#dbe6f5"/>
+        <stop offset="100%" stop-color="#aebedb"/>
+      </radialGradient>
+      <mask id="moonMask">
+        <rect x="0" y="0" width="240" height="190" fill="white"/>
+        <circle cx="${cx+18}" cy="${cy-10}" r="${r-2}" fill="black"/>
+      </mask>
+    </defs>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#moonFace)" mask="url(#moonMask)"/>
+  `;
+}
+function star(x,y,s){
+  return `<path d="M${x} ${y-s} L${x+s*0.28} ${y-s*0.28} L${x+s} ${y} L${x+s*0.28} ${y+s*0.28} L${x} ${y+s} L${x-s*0.28} ${y+s*0.28} L${x-s} ${y} L${x-s*0.28} ${y-s*0.28} Z" fill="#dbe6ff" opacity="0.85"/>`;
+}
+function cloudPath(x=0,y=0,scale=1,fill='#ffffff'){
+  return `<g transform="translate(${x},${y}) scale(${scale})">
+    <path d="M20 55 C4 55 -6 42 3 29 C6 15 24 6 38 12 C46 -2 70 -3 80 11 C97 9 112 20 111 35 C121 38 122 55 106 55 Z"
+      fill="${fill}"/>
+  </g>`;
+}
+function cloudShadow(x=0,y=0,scale=1){
+  return cloudPath(x,y,scale,'#c7d2e0');
+}
+function raindrop(x,y){
+  return `<path d="M${x} ${y} c-4 5 -6 9 -6 12 a6 6 0 0 0 12 0 c0 -3 -2 -7 -6 -12z" fill="#5aa7ff"/>`;
+}
+function snowflake(x,y,s=7,color='#eaf3ff'){
+  return `<g transform="translate(${x},${y})" stroke="${color}" stroke-width="1.6" stroke-linecap="round">
+    <line x1="0" y1="${-s}" x2="0" y2="${s}"/>
+    <line x1="${-s*0.87}" y1="${-s/2}" x2="${s*0.87}" y2="${s/2}"/>
+    <line x1="${-s*0.87}" y1="${s/2}" x2="${s*0.87}" y2="${-s/2}"/>
+  </g>`;
+}
+function bolt(x,y){
+  return `<path d="M${x} ${y} L${x-10} ${y+22} L${x} ${y+22} L${x-8} ${y+46} L${x+16} ${y+16} L${x+4} ${y+16} Z" fill="#ffd65c"/>`;
+}
+
+function buildScene(id){
+  switch(id){
+    case 'clear-day':
+      return svgWrap(sunGlow()+sunDisc());
+
+    case 'clear-night':
+      return svgWrap(moonGlow()+star(58,40,4)+star(178,55,3)+star(200,110,4)+star(45,120,3)+moonDisc());
+
+    case 'partly-day':
+      return svgWrap(
+        sunGlow(150,70,40)+sunDisc(150,70,36)+
+        cloudShadow(35,86,1.15)+cloudPath(28,80,1.15)
+      );
+
+    case 'partly-night':
+      return svgWrap(
+        moonGlow(150,68,'mg2')+moonDisc(150,68,34)+
+        cloudShadow(35,88,1.15)+cloudPath(28,82,1.15)
+      );
+
+    case 'cloudy':
+      return svgWrap(
+        cloudShadow(20,52,1.15)+cloudPath(14,44,1.15,'#e9edf3')+
+        cloudShadow(90,78,1.35)+cloudPath(82,70,1.35,'#ffffff')
+      );
+
+    case 'rain':
+      return svgWrap(
+        cloudShadow(20,42,1.1)+cloudPath(14,34,1.1,'#dfe6ee')+
+        cloudShadow(90,66,1.3)+cloudPath(82,58,1.3,'#f4f7fb')+
+        raindrop(70,132)+raindrop(105,142)+raindrop(140,130)+raindrop(160,148)
+      );
+
+    case 'thunder':
+      return svgWrap(
+        cloudShadow(20,40,1.1)+cloudPath(14,32,1.1,'#c9d2de')+
+        cloudShadow(90,64,1.3)+cloudPath(82,56,1.3,'#dde3ec')+
+        bolt(118,120)
+      );
+
+    case 'snow':
+      return svgWrap(
+        cloudShadow(20,44,1.1)+cloudPath(14,36,1.1,'#e5eaf1')+
+        cloudShadow(90,68,1.3)+cloudPath(82,60,1.3,'#ffffff')+
+        snowflake(72,130,8)+snowflake(110,142,7)+snowflake(148,128,8)+snowflake(168,148,6)
+      );
+
+    default:
+      return svgWrap(sunGlow()+sunDisc());
+  }
+}
+
+/* ---------- Render + controls ---------- */
+const stage = document.getElementById('iconStage');
+const controls = document.getElementById('controls');
+
+function render(id){
+  stage.innerHTML = buildScene(id);
+  [...controls.children].forEach(b => b.classList.toggle('active', b.dataset.id === id));
+}
+
+CONDITIONS.forEach(c => {
+  const btn = document.createElement('button');
+  btn.textContent = c.label;
+  btn.dataset.id = c.id;
+  btn.onclick = () => render(c.id);
+  controls.appendChild(btn);
+});
+
+/* Auto-pick a sensible default based on real local time */
+const hour = new Date().getHours();
+const isNight = hour < 6 || hour >= 19;
+render(isNight ? 'clear-night' : 'clear-day');
+</script>
+</body>
+</html>

@@ -413,6 +413,106 @@ function pressureGaugeSVG(hpa){
   </svg>`;
 }
 
+// --- Hero weather icon scenes (SVG) ---
+// The hero visual used to show one hardcoded cloud glyph no matter what the sky
+// was actually doing, which is why it always looked overcast with the sun stuck
+// behind it. These builders draw a real scene (sun/moon/clouds/rain/thunder) that
+// matches the classified condition, and heroIconIdFor() below maps our condition
+// icons/text onto one of these scenes.
+function heroSvgWrap(inner, vb='0 0 240 190'){
+  return `<svg viewBox="${vb}" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
+}
+function heroSunGlow(cx=120, cy=95, r=46, id='hg1'){
+  return `<defs><radialGradient id="${id}" cx="50%" cy="50%" r="50%">
+    <stop offset="0%" stop-color="#ffe28a" stop-opacity="0.95"/>
+    <stop offset="40%" stop-color="#f5c451" stop-opacity="0.5"/>
+    <stop offset="100%" stop-color="#f5c451" stop-opacity="0"/>
+  </radialGradient></defs><circle cx="${cx}" cy="${cy}" r="${r*2.3}" fill="url(#${id})"/>`;
+}
+function heroSunRays(cx=120, cy=95, r=44, id='hrays1'){
+  let rays = '';
+  const count = 12;
+  for(let i=0;i<count;i++){
+    const a = (Math.PI*2/count)*i;
+    const inner = r+10, outer = r+(i%2===0?26:18);
+    const x1=cx+Math.cos(a)*inner, y1=cy+Math.sin(a)*inner;
+    const x2=cx+Math.cos(a)*outer, y2=cy+Math.sin(a)*outer;
+    rays += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#ffd97a" stroke-width="3.5" stroke-linecap="round" opacity="0.85"/>`;
+  }
+  return `<g id="${id}">${rays}</g>`;
+}
+function heroSunDisc(cx=120, cy=95, r=44){
+  return `<defs><radialGradient id="hsunFace${cx}${cy}" cx="35%" cy="28%" r="75%">
+    <stop offset="0%" stop-color="#fffaea"/><stop offset="35%" stop-color="#ffe28a"/>
+    <stop offset="70%" stop-color="#ffc247"/><stop offset="100%" stop-color="#f29a1e"/>
+  </radialGradient></defs>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#hsunFace${cx}${cy})"/>
+  <ellipse cx="${cx-r*0.32}" cy="${cy-r*0.35}" rx="${r*0.38}" ry="${r*0.24}" fill="#fffef2" opacity="0.55"/>`;
+}
+function heroMoonGlow(cx=120, cy=95, id='hmg1'){
+  return `<defs><radialGradient id="${id}" cx="50%" cy="50%" r="50%">
+    <stop offset="0%" stop-color="#cfe3ff" stop-opacity="0.55"/>
+    <stop offset="45%" stop-color="#8fb4ff" stop-opacity="0.25"/>
+    <stop offset="100%" stop-color="#8fb4ff" stop-opacity="0"/>
+  </radialGradient></defs><circle cx="${cx}" cy="${cy}" r="96" fill="url(#${id})"/>`;
+}
+function heroMoonDisc(cx=120, cy=95, r=42){
+  return `<defs><radialGradient id="hmoonFace${cx}${cy}" cx="32%" cy="28%" r="80%">
+    <stop offset="0%" stop-color="#ffffff"/><stop offset="55%" stop-color="#e3ecfa"/><stop offset="100%" stop-color="#a9bbdc"/>
+  </radialGradient>
+  <mask id="hmoonMask${cx}${cy}"><rect x="0" y="0" width="240" height="190" fill="white"/>
+  <circle cx="${cx+16}" cy="${cy-12}" r="${r-1}" fill="black"/></mask></defs>
+  <g mask="url(#hmoonMask${cx}${cy})">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#hmoonFace${cx}${cy})"/>
+    <circle cx="${cx-12}" cy="${cy-6}" r="7" fill="#c3d1ec" opacity="0.55"/>
+    <circle cx="${cx+2}" cy="${cy+14}" r="4.5" fill="#c3d1ec" opacity="0.5"/>
+    <circle cx="${cx-6}" cy="${cy+16}" r="3" fill="#c3d1ec" opacity="0.4"/>
+  </g>`;
+}
+function heroStar(x,y,s){
+  return `<path d="M${x} ${y-s} L${x+s*0.28} ${y-s*0.28} L${x+s} ${y} L${x+s*0.28} ${y+s*0.28} L${x} ${y+s} L${x-s*0.28} ${y+s*0.28} L${x-s} ${y} L${x-s*0.28} ${y-s*0.28} Z" fill="#dbe6ff" opacity="0.85"/>`;
+}
+function heroCloud(x=0,y=0,scale=1,fill='#ffffff',id=''){
+  const gid = 'hcloudShade'+(id||Math.random().toString(36).slice(2));
+  return `<g transform="translate(${x},${y}) scale(${scale})">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="${fill}"/>
+    </linearGradient></defs>
+    <path d="M20 55 C4 55 -6 42 3 29 C6 15 24 6 38 12 C46 -2 70 -3 80 11 C97 9 112 20 111 35 C121 38 122 55 106 55 Z" fill="url(#${gid})"/>
+  </g>`;
+}
+function heroCloudShadow(x=0,y=0,scale=1){ return heroCloud(x,y,scale,'#a9b7c9'); }
+function heroRaindrop(x,y){
+  return `<path d="M${x} ${y} c-4 5 -6 9 -6 12 a6 6 0 0 0 12 0 c0 -3 -2 -7 -6 -12z" fill="#5aa7ff"/>`;
+}
+function heroBolt(x,y){
+  return `<path d="M${x} ${y} L${x-10} ${y+22} L${x} ${y+22} L${x-8} ${y+46} L${x+16} ${y+16} L${x+4} ${y+16} Z" fill="#ffd65c"/>`;
+}
+function buildHeroScene(id){
+  switch(id){
+    case 'clear-day': return heroSvgWrap(heroSunGlow()+heroSunRays()+heroSunDisc());
+    case 'clear-night': return heroSvgWrap(heroMoonGlow()+heroStar(58,40,4)+heroStar(178,55,3)+heroStar(200,110,4)+heroStar(45,120,3)+heroMoonDisc());
+    case 'partly-day': return heroSvgWrap(heroSunGlow(150,70,40)+heroSunRays(150,70,36,'hrays2')+heroSunDisc(150,70,36)+heroCloudShadow(35,86,1.15)+heroCloud(28,80,1.15));
+    case 'partly-night': return heroSvgWrap(heroMoonGlow(150,68,'hmg2')+heroMoonDisc(150,68,34)+heroCloudShadow(35,88,1.15)+heroCloud(28,82,1.15));
+    case 'rain': return heroSvgWrap(heroCloudShadow(20,42,1.1)+heroCloud(14,34,1.1,'#dfe6ee')+heroCloudShadow(90,66,1.3)+heroCloud(82,58,1.3,'#f4f7fb')+heroRaindrop(70,132)+heroRaindrop(105,142)+heroRaindrop(140,130)+heroRaindrop(160,148));
+    case 'thunder': return heroSvgWrap(heroCloudShadow(20,40,1.1)+heroCloud(14,32,1.1,'#c9d2de')+heroCloudShadow(90,64,1.3)+heroCloud(82,56,1.3,'#dde3ec')+heroBolt(118,120));
+    case 'cloudy':
+    default: return heroSvgWrap(heroCloudShadow(20,52,1.15)+heroCloud(14,44,1.15,'#e9edf3')+heroCloudShadow(90,78,1.35)+heroCloud(82,70,1.35,'#ffffff'));
+  }
+}
+// Maps the emoji+text our existing classifier already produces onto one of the
+// scenes above, so the hero art always matches the real forecast instead of a
+// fixed glyph.
+function heroIconIdFor(icon, isDay, text){
+  if(icon === '⛈️') return 'thunder';
+  if(icon === '🌧️' || icon === '🌦️') return 'rain';
+  if(icon === '☀️') return 'clear-day';
+  if(icon === '🌙') return 'clear-night';
+  if(icon === '🌤️' || icon === '⛅') return isDay ? 'partly-day' : 'partly-night';
+  if(icon === '☁️') return (text || '').includes('Partly') ? (isDay ? 'partly-day' : 'partly-night') : 'cloudy';
+  return isDay ? 'partly-day' : 'partly-night';
+}
+
 function isDaytime(date){
   const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
   const entry = SUN_TIMES.find(s => {
@@ -1237,6 +1337,10 @@ async function runForLocation(lat, lon, label){
 
     document.getElementById('heroTemp').textContent = `${consensusTemp?.toFixed(0) ?? '--'}°`;
     document.getElementById('heroCondition').textContent = `${nowCondition.icon} ${nowCondition.text}`;
+    const heroStage = document.getElementById('heroIconStage');
+    if(heroStage){
+      heroStage.innerHTML = buildHeroScene(heroIconIdFor(nowCondition.icon, isDaytime(new Date(hourly.time[startIdx])), nowCondition.text));
+    }
     document.getElementById('heroRain').textContent = `${consensusRain?.toFixed(0) ?? '--'}%`;
     document.getElementById('heroWind').textContent = `${consensusWind?.toFixed(1) ?? '--'} km/h`;
     document.getElementById('heroFeels').textContent = `${consensusFeels?.toFixed(0) ?? '--'}°`;
@@ -1448,9 +1552,23 @@ function getTyphoonView(){
   try{ return JSON.parse(localStorage.getItem('typhoonView')); }
   catch(e){ return null; }
 }
+// Returns true/false so callers (and the on-screen note) can tell the difference
+// between "saved" and "silently failed" instead of assuming it always worked —
+// some browsers (private/incognito modes, storage quota, etc.) can throw here.
 function setTyphoonView(v){
-  try{ localStorage.setItem('typhoonView', JSON.stringify(v)); }
-  catch(e){ console.warn('Could not save typhoon view:', e.message); }
+  try{ localStorage.setItem('typhoonView', JSON.stringify(v)); return true; }
+  catch(e){ console.warn('Could not save typhoon view:', e.message); return false; }
+}
+// Visible confirmation that the saved map view actually took — the button flash
+// alone is easy to miss, and previously there was no way to tell the save had
+// worked without reloading the page and watching the map reposition.
+function renderTyphoonSavedNote(){
+  const note = document.getElementById('typhoonSavedNote');
+  if(!note) return;
+  const saved = getTyphoonView();
+  note.textContent = saved
+    ? `Currently remembering: ${Number(saved.lat).toFixed(4)}, ${Number(saved.lon).toFixed(4)} (zoom ${saved.zoom}) — this loads automatically next time you open this tab.`
+    : 'No map view saved yet — this tab will default to your forecast location.';
 }
 
 function loadTyphoonMap(lat, lon, zoom){
@@ -1469,16 +1587,30 @@ function initTyphoonTab(){
   document.getElementById('typhoonZoom').value = view.zoom;
   loadTyphoonMap(view.lat, view.lon, view.zoom);
   loadActiveTyphoons();
+  renderTyphoonSavedNote();
 }
 
 function saveTyphoonView(btnEl){
-  const lat = parseFloat(document.getElementById('typhoonLat').value);
-  const lon = parseFloat(document.getElementById('typhoonLon').value);
+  const latEl = document.getElementById('typhoonLat');
+  const lonEl = document.getElementById('typhoonLon');
+  const lat = parseFloat(latEl.value);
+  const lon = parseFloat(lonEl.value);
   const zoom = parseInt(document.getElementById('typhoonZoom').value, 10) || 6;
-  if(isNaN(lat) || isNaN(lon)) return;
-  setTyphoonView({lat, lon, zoom});
+  if(isNaN(lat) || isNaN(lon)){
+    // Previously this just silently returned, so a bad/empty field looked
+    // exactly like a successful save — now it's explicit about why nothing happened.
+    latEl.classList.toggle('err-field', isNaN(lat));
+    lonEl.classList.toggle('err-field', isNaN(lon));
+    const note = document.getElementById('typhoonSavedNote');
+    if(note) note.textContent = 'Enter a valid latitude and longitude before saving.';
+    return;
+  }
+  latEl.classList.remove('err-field');
+  lonEl.classList.remove('err-field');
+  const ok = setTyphoonView({lat, lon, zoom});
   loadTyphoonMap(lat, lon, zoom);
-  flashSaveButton(btnEl, 'Saved ✓');
+  flashSaveButton(btnEl, ok ? 'Saved ✓' : 'Save failed');
+  renderTyphoonSavedNote();
 }
 
 function centerTyphoonOnMyLocation(){
@@ -1489,7 +1621,10 @@ function centerTyphoonOnMyLocation(){
   document.getElementById('typhoonLat').value = CURRENT.lat;
   document.getElementById('typhoonLon').value = CURRENT.lon;
   document.getElementById('typhoonZoom').value = 7;
-  saveTyphoonView();
+  // Was calling saveTyphoonView() with no button reference, so the save button
+  // never showed its "Saved ✓" flash after using this shortcut — now it reuses
+  // the same save button so the feedback is consistent either way.
+  saveTyphoonView(document.getElementById('typhoonSaveBtn'));
 }
 
 // Best-effort: GDACS publishes a free global disaster feed including active tropical

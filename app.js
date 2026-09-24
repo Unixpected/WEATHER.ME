@@ -798,20 +798,36 @@ function setSavedLocations(arr){
 function isDuplicateSaved(arr, lat, lon){
   return arr.some(s => Math.abs(s.lat - lat) < 0.001 && Math.abs(s.lon - lon) < 0.001);
 }
-function saveLocationToStorage(lat, lon, label){
+function saveLocationToStorage(lat, lon, label, btnEl){
   const arr = getSavedLocations();
-  if(isDuplicateSaved(arr, lat, lon)){ renderSavedLocations(); return; }
+  if(isDuplicateSaved(arr, lat, lon)){ flashSaveButton(btnEl, 'Already saved'); renderSavedLocations(); return; }
   arr.push({lat, lon, label});
   setSavedLocations(arr);
   renderSavedLocations();
+  flashSaveButton(btnEl, 'Saved ✓');
 }
-function savePickedLocation(){
+// Gives visible confirmation that Save worked, since the saved-locations list can be
+// scrolled out of view when the button is clicked — without this the save silently
+// succeeds but looks like nothing happened.
+function flashSaveButton(btnEl, message){
+  if(!btnEl) return;
+  const original = btnEl.dataset.originalLabel ?? btnEl.textContent;
+  btnEl.dataset.originalLabel = original;
+  btnEl.textContent = message;
+  btnEl.disabled = true;
+  clearTimeout(btnEl.__flashTimer);
+  btnEl.__flashTimer = setTimeout(() => {
+    btnEl.textContent = btnEl.dataset.originalLabel;
+    btnEl.disabled = false;
+  }, 1400);
+}
+function savePickedLocation(btnEl){
   if(!pickedLoc) return;
-  saveLocationToStorage(pickedLoc.lat, pickedLoc.lon, pickedLoc.label);
+  saveLocationToStorage(pickedLoc.lat, pickedLoc.lon, pickedLoc.label, btnEl);
 }
-function saveCurrentLocation(){
+function saveCurrentLocation(btnEl){
   if(!CURRENT) return;
-  saveLocationToStorage(CURRENT.lat, CURRENT.lon, CURRENT.label);
+  saveLocationToStorage(CURRENT.lat, CURRENT.lon, CURRENT.label, btnEl);
 }
 function deleteSavedLocation(idx){
   const arr = getSavedLocations();
@@ -1418,6 +1434,14 @@ function switchTab(tab){
     typhoonInitialized = true;
     initTyphoonTab();
   }
+  // Leaflet measures the #map container's size when tiles load. While the forecast
+  // tab is hidden (display:none) that size is 0x0, so tiles fetched during that time
+  // never render correctly. invalidateSize() forces Leaflet to re-measure and repaint
+  // once the container is visible again — must run after the display:block above,
+  // and on the next frame so the browser has actually applied the new layout.
+  if(tab === 'forecast' && map){
+    requestAnimationFrame(() => map.invalidateSize());
+  }
 }
 
 function getTyphoonView(){
@@ -1447,13 +1471,14 @@ function initTyphoonTab(){
   loadActiveTyphoons();
 }
 
-function saveTyphoonView(){
+function saveTyphoonView(btnEl){
   const lat = parseFloat(document.getElementById('typhoonLat').value);
   const lon = parseFloat(document.getElementById('typhoonLon').value);
   const zoom = parseInt(document.getElementById('typhoonZoom').value, 10) || 6;
   if(isNaN(lat) || isNaN(lon)) return;
   setTyphoonView({lat, lon, zoom});
   loadTyphoonMap(lat, lon, zoom);
+  flashSaveButton(btnEl, 'Saved ✓');
 }
 
 function centerTyphoonOnMyLocation(){
@@ -1592,3 +1617,6 @@ async function loadActiveTyphoons(){
 
 initFrontMap();
 renderSavedLocations();
+// Auto-detect the user's location on first load so they see real weather
+// immediately, instead of waiting for a manual "Use my location" click.
+useMyLocation();

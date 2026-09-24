@@ -268,7 +268,12 @@ function buildFineNowcast(fineData, hourlyMultiModel, startIdx){
   const points = [];
   for(let i=0; i<fTimes.length; i++){
     const t = new Date(fTimes[i]);
-    if(t < now || t > windowEnd) continue;
+    // Each point represents a 15-minute window starting at t. Previously this
+    // dropped any window that had *started* before now, so at e.g. 4:52 the
+    // in-progress 4:45-5:00 window was skipped and the list started at 5:00 —
+    // right now was missing. Keep it as long as the window hasn't fully ended yet.
+    const windowFinish = new Date(t.getTime() + 15*60*1000);
+    if(windowFinish <= now || t > windowEnd) continue;
 
     // find the enclosing hour in the multi-model series to pull its median
     let hourIdx = -1, bestDiff = Infinity;
@@ -683,7 +688,7 @@ function jumpToHourBlock(idx){
     const header = document.getElementById(`mb${idx}-header`);
     if(header){
       if(!header.classList.contains('open')) toggleChunk(`mb${idx}`);
-      header.scrollIntoView({behavior:'smooth', block:'center'});
+      header.scrollIntoView({behavior:'smooth', block:'start'});
     }
   }, 50);
 }
@@ -745,9 +750,13 @@ function buildMinutesForPoint(finePoints, idx){
   const next = finePoints[idx+1];
   const startTime = new Date(p.time);
   const mmPerMinute = p.precipMm / 15;
+  const now = new Date();
   const rows = [];
   for(let m=0; m<15; m++){
     const t = new Date(startTime.getTime() + m*60000);
+    // Skip minutes that have already passed within the current in-progress
+    // 15-minute window, so "now" doesn't show a list starting in the past.
+    if(t.getTime() + 60000 <= now.getTime()) continue;
     const frac = m/15;
     const temp = next ? (p.temp + (next.temp - p.temp)*frac) : p.temp;
     rows.push({time:t, temp, mmPerHour: mmPerMinute*60});
@@ -755,12 +764,19 @@ function buildMinutesForPoint(finePoints, idx){
   return rows;
 }
 
+// Exclusive accordion: opening one 15-minute block now closes any other block
+// that was left open, instead of everything staying open and turning "show
+// details" into one very long page that's hard to scroll back out of.
 function toggleChunk(id){
   const body = document.getElementById(`${id}-body`);
   const header = document.getElementById(`${id}-header`);
-  const isOpen = body.classList.contains('open');
-  body.classList.toggle('open', !isOpen);
-  header.classList.toggle('open', !isOpen);
+  const wasOpen = body.classList.contains('open');
+  document.querySelectorAll('.chunk-body.open').forEach(b => b.classList.remove('open'));
+  document.querySelectorAll('.chunk-header.open').forEach(h => h.classList.remove('open'));
+  if(!wasOpen){
+    body.classList.add('open');
+    header.classList.add('open');
+  }
 }
 
 function fmtHour(iso){
@@ -1243,7 +1259,7 @@ async function loadMicroGrid(lat, lon){
       const p = r.hourly.precipitation_probability[idx];
       const c = r.hourly.cloud_cover ? r.hourly.cloud_cover[idx] : null;
       const cond = simpleCondition(p, c, isDaytime(new Date(r.hourly.time[idx])));
-      return `<div class="mini"><div class="dir">${pts[d].dir}</div><div style="font-size:1.1rem; margin:2px 0;">${cond.icon}</div><div class="t">${t?.toFixed(1) ?? '--'}°</div><div class="p" style="font-size:.66rem;">${cond.text}</div></div>`;
+      return `<div class="mini"><div class="dir">${pts[d].dir}</div><div class="mini-icon">${cond.icon}</div><div class="t">${t?.toFixed(1) ?? '--'}°</div><div class="p">${cond.text}</div></div>`;
     }).join('');
   }catch(e){
     gridEl.innerHTML = `<div class="mini-error"><span>Nearby conditions unavailable right now.</span><button class="text-btn" onclick="loadMicroGrid(${lat}, ${lon})">Retry</button></div>`;

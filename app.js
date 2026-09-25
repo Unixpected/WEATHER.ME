@@ -976,8 +976,24 @@ function setSavedLocations(arr){
   try{ localStorage.setItem('savedLocations', JSON.stringify(arr)); }
   catch(e){ console.warn('Could not save location:', e.message); }
 }
+// Straight lat/lon-degree comparison doesn't account for latitude scaling, and the
+// old flat 0.001° threshold (~111m of *latitude*) was wide enough to treat two
+// different streets a couple hundred meters apart in a dense city block as "the
+// same place" — which is what flagged Pasay Road as a duplicate of Libertad.
+// A real distance calculation with a much tighter radius only catches genuine
+// re-saves of the same spot (e.g. double-clicking Save), not nearby-but-different
+// addresses.
+function distanceMeters(lat1, lon1, lat2, lon2){
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+const DUPLICATE_RADIUS_METERS = 60;
 function findDuplicateSaved(arr, lat, lon){
-  return arr.find(s => Math.abs(s.lat - lat) < 0.001 && Math.abs(s.lon - lon) < 0.001) || null;
+  return arr.find(s => distanceMeters(s.lat, s.lon, lat, lon) < DUPLICATE_RADIUS_METERS) || null;
 }
 // Explains *why* it's a duplicate (which saved entry it matched) instead of a bare
 // "Already saved" — this matters because "Use my location" falls back to coarse,

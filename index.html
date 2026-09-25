@@ -39,7 +39,7 @@
   <div id="forecastTab">
     <section class="location-bar card-surface">
       <div class="location-main"><span class="location-pin">⌖</span><div><small>FORECAST LOCATION</small><strong id="locationLabel">Choose a location</strong></div></div>
-      <div class="location-actions"><button class="primary-btn" onclick="useMyLocation()">Use my location</button><button class="ghost-btn" onclick="document.getElementById('manualBox').style.display='block';document.getElementById('manualCity').focus()">Search</button></div>
+      <div class="location-actions"><button class="primary-btn" onclick="useMyLocation()">Use my location</button><button class="ghost-btn" onclick="document.getElementById('manualBox').style.display='block';document.getElementById('manualCity').focus()">Search</button><button class="ghost-btn" id="topSaveBtn" onclick="saveCurrentLocation(this)">☆ Save</button></div>
     </section>
     <div id="manualBox" class="search-panel card-surface" style="display:none">
       <div class="search-head"><div><b>Find a place</b><span>Search a city, street, barangay or landmark.</span></div><button class="close-btn" onclick="document.getElementById('manualBox').style.display='none'">×</button></div>
@@ -60,7 +60,7 @@
           <div class="hero-location" id="heroPlace">—</div>
           <div class="hero-temperature"><span id="heroTemp">--°</span><div><strong id="heroCondition">Loading…</strong><small>Feels like <b id="heroFeels">--°</b></small></div></div>
           <div class="hero-sun" id="heroSun">—</div>
-          <div class="hero-actions"><button class="hero-action primary" onclick="useMyLocation()">⌖ Use my location</button><button class="hero-action" onclick="const b=document.getElementById('manualBox'); b.style.display='block'; document.getElementById('manualCity').focus(); b.scrollIntoView({behavior:'smooth', block:'center'});">⌕ Search</button><button class="hero-action" onclick="saveCurrentLocation(this)">☆ Save</button></div>
+          <div class="hero-actions"><button class="hero-action primary" onclick="useMyLocation()">⌖ Use my location</button><button class="hero-action" onclick="const b=document.getElementById('manualBox'); b.style.display='block'; document.getElementById('manualCity').focus(); b.scrollIntoView({behavior:'smooth', block:'center'});">⌕ Search</button></div>
         </div>
         <div class="weather-visual"><div class="weather-icon-stage" id="heroIconStage"></div><div class="visual-caption">LOCAL CONDITIONS</div><div class="aqi-chip" id="aqiChip">🍃 AQI —</div></div>
         <div class="metric-grid">

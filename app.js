@@ -1607,6 +1607,9 @@ function switchTab(tab){
   if(tab === 'forecast' && map){
     requestAnimationFrame(() => map.invalidateSize());
   }
+  if(tab === 'typhoon' && typhoonLocatorMap){
+    requestAnimationFrame(() => typhoonLocatorMap.invalidateSize());
+  }
 }
 
 function getTyphoonView(){
@@ -1624,10 +1627,13 @@ function setTyphoonView(v){
 // alone is easy to miss, and previously there was no way to tell the save had
 // worked without reloading the page and watching the map reposition.
 // Windy's embed is a cross-origin iframe, so this page can never read back
-// where the user actually panned/zoomed to inside it. lastTyphoonView tracks
-// the last position *we* loaded (via "Center on my location" or the initial
-// load), and that's what the plain Save button persists.
+// where the user actually panned/zoomed to inside it. Instead, a small Leaflet
+// "locator" map lets people click a point directly — that click is what gets
+// saved and what moves the big radar below, so Save always has something real
+// to persist instead of guessing at an unreadable pan position.
 let lastTyphoonView = null;
+let typhoonLocatorMap = null;
+let typhoonLocatorMarker = null;
 
 function loadTyphoonMap(lat, lon, zoom){
   lastTyphoonView = {lat, lon, zoom};
@@ -1635,6 +1641,29 @@ function loadTyphoonMap(lat, lon, zoom){
   iframe.src = `https://embed.windy.com/embed2.html?lat=${lat}&lon=${lon}&detailLat=${lat}&detailLon=${lon}` +
     `&width=650&height=480&zoom=${zoom}&level=surface&overlay=wind&product=ecmwf&menu=&message=true` +
     `&marker=&calendar=now&pressure=&type=map&location=coordinates&detail=&metricWind=default&metricTemp=default&radarRange=-1`;
+  if(typhoonLocatorMap){
+    if(typhoonLocatorMarker) typhoonLocatorMap.removeLayer(typhoonLocatorMarker);
+    typhoonLocatorMarker = L.circleMarker([lat, lon], {radius:8, color:'#4da3ff', fillColor:'#4da3ff', fillOpacity:.9}).addTo(typhoonLocatorMap);
+    typhoonLocatorMap.setView([lat, lon], typhoonLocatorMap.getZoom());
+  }
+}
+
+async function onTyphoonLocatorClick(e){
+  const {lat, lng:lon} = e.latlng;
+  loadTyphoonMap(lat, lon, (lastTyphoonView && lastTyphoonView.zoom) || 7);
+  const note = document.getElementById('typhoonPickedNote');
+  if(note) note.textContent = `Picked: ${lat.toFixed(4)}, ${lon.toFixed(4)} — hit Save to remember this spot.`;
+  const name = await reverseGeocode(lat, lon).catch(()=>null);
+  if(name && note) note.textContent = `Picked: ${name} (${lat.toFixed(4)}, ${lon.toFixed(4)}) — hit Save to remember this spot.`;
+}
+
+function initTyphoonLocatorMap(startLat, startLon){
+  typhoonLocatorMap = L.map('typhoonLocatorMap', {zoomControl:true}).setView([startLat, startLon], 6);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom:16, attribution:'Tiles © Esri — Esri, HERE, Garmin, OpenStreetMap contributors'
+  }).addTo(typhoonLocatorMap);
+  typhoonLocatorMap.on('click', onTyphoonLocatorClick);
+  typhoonLocatorMarker = L.circleMarker([startLat, startLon], {radius:8, color:'#4da3ff', fillColor:'#4da3ff', fillOpacity:.9}).addTo(typhoonLocatorMap);
 }
 
 function initTyphoonTab(){
@@ -1642,6 +1671,7 @@ function initTyphoonTab(){
   const fallback = CURRENT ? {lat:CURRENT.lat, lon:CURRENT.lon, zoom:7} : {lat:12.8797, lon:130.0, zoom:5};
   const view = saved || fallback;
   loadTyphoonMap(view.lat, view.lon, view.zoom);
+  initTyphoonLocatorMap(view.lat, view.lon);
   loadActiveTyphoons();
 }
 
@@ -1660,6 +1690,8 @@ function centerTyphoonOnMyLocation(){
     return;
   }
   loadTyphoonMap(CURRENT.lat, CURRENT.lon, 7);
+  const note = document.getElementById('typhoonPickedNote');
+  if(note) note.textContent = `Picked: ${CURRENT.label || `${CURRENT.lat.toFixed(4)}, ${CURRENT.lon.toFixed(4)}`} — hit Save to remember this spot.`;
 }
 
 // Best-effort: GDACS publishes a free global disaster feed including active tropical

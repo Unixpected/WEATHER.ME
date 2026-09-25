@@ -855,11 +855,34 @@ function useMyLocation(){
       runForLocation(lat, lon, 'Your location');
     },
     err => {
-      console.warn('Browser geolocation failed:', err.message);
+      console.warn('Browser geolocation (high accuracy) failed:', err.message);
+      // High-accuracy GPS often times out on desktops/laptops with no GPS chip
+      // (it waits on a hardware fix that never comes), even though the browser
+      // can usually resolve a decent Wi-Fi/cell-based position quickly with
+      // high accuracy turned off. Retrying that way before falling all the way
+      // back to coarse IP location means "Use my location" lands on your actual
+      // current spot far more often, instead of repeatedly landing on the same
+      // network-level point and getting flagged as an already-saved duplicate.
+      if(err.code === err.TIMEOUT){
+        statusEl.textContent = 'Precise GPS timed out — trying a quicker, lower-accuracy fix…';
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            const {latitude:lat, longitude:lon} = pos.coords;
+            statusEl.textContent = 'Location found. Fetching forecasts…';
+            runForLocation(lat, lon, 'Your location');
+          },
+          err2 => {
+            console.warn('Browser geolocation (low accuracy) failed:', err2.message);
+            statusEl.textContent = 'Still could not get GPS — trying network-based location instead…';
+            fallbackToIpLocation();
+          },
+          {enableHighAccuracy:false, timeout:8000, maximumAge:60000}
+        );
+        return;
+      }
       const isFileProtocol = location.protocol === 'file:';
       let reason;
       if(isFileProtocol) reason = 'GPS is blocked on local files (browser rule)';
-      else if(err.code === err.TIMEOUT) reason = 'GPS timed out — likely blocked by your network/security software, or location services are off';
       else if(err.code === err.PERMISSION_DENIED) reason = 'location permission was denied';
       else reason = err.message;
       statusEl.textContent = `${reason}. Trying network-based location instead…`;
@@ -953,12 +976,17 @@ function setSavedLocations(arr){
   try{ localStorage.setItem('savedLocations', JSON.stringify(arr)); }
   catch(e){ console.warn('Could not save location:', e.message); }
 }
-function isDuplicateSaved(arr, lat, lon){
-  return arr.some(s => Math.abs(s.lat - lat) < 0.001 && Math.abs(s.lon - lon) < 0.001);
+function findDuplicateSaved(arr, lat, lon){
+  return arr.find(s => Math.abs(s.lat - lat) < 0.001 && Math.abs(s.lon - lon) < 0.001) || null;
 }
+// Explains *why* it's a duplicate (which saved entry it matched) instead of a bare
+// "Already saved" — this matters because "Use my location" falls back to coarse,
+// network-based positioning when GPS fails/times out, which often lands on the
+// same spot as an already-saved place even though the user is somewhere new.
 function saveLocationToStorage(lat, lon, label, btnEl){
   const arr = getSavedLocations();
-  if(isDuplicateSaved(arr, lat, lon)){ flashSaveButton(btnEl, 'Already saved'); renderSavedLocations(); return; }
+  const dupe = findDuplicateSaved(arr, lat, lon);
+  if(dupe){ flashSaveButton(btnEl, `Already saved as "${dupe.label}"`); renderSavedLocations(); return; }
   arr.push({lat, lon, label});
   setSavedLocations(arr);
   renderSavedLocations();
@@ -977,7 +1005,7 @@ function flashSaveButton(btnEl, message){
   btnEl.__flashTimer = setTimeout(() => {
     btnEl.textContent = btnEl.dataset.originalLabel;
     btnEl.disabled = false;
-  }, 1400);
+  }, 2200);
 }
 function savePickedLocation(btnEl){
   if(!pickedLoc) return;

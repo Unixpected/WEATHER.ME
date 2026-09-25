@@ -1628,7 +1628,7 @@ function renderTyphoonSavedNote(){
   if(!note) return;
   const saved = getTyphoonView();
   note.textContent = saved
-    ? `Currently remembering: ${Number(saved.lat).toFixed(4)}, ${Number(saved.lon).toFixed(4)} (zoom ${saved.zoom}) — this loads automatically next time you open this tab.`
+    ? `Currently remembering: ${saved.label || `${Number(saved.lat).toFixed(4)}, ${Number(saved.lon).toFixed(4)}`} (zoom ${saved.zoom}) — this loads automatically next time you open this tab.`
     : 'No map view saved yet — this tab will default to your forecast location.';
 }
 
@@ -1641,36 +1641,47 @@ function loadTyphoonMap(lat, lon, zoom){
 
 function initTyphoonTab(){
   const saved = getTyphoonView();
-  const fallback = CURRENT ? {lat:CURRENT.lat, lon:CURRENT.lon, zoom:7} : {lat:12.8797, lon:130.0, zoom:5};
+  const fallback = CURRENT ? {lat:CURRENT.lat, lon:CURRENT.lon, zoom:7, label:CURRENT.label} : {lat:12.8797, lon:130.0, zoom:5, label:''};
   const view = saved || fallback;
-  document.getElementById('typhoonLat').value = view.lat;
-  document.getElementById('typhoonLon').value = view.lon;
+  document.getElementById('typhoonPlace').value = view.label || '';
   document.getElementById('typhoonZoom').value = view.zoom;
   loadTyphoonMap(view.lat, view.lon, view.zoom);
   loadActiveTyphoons();
   renderTyphoonSavedNote();
 }
 
-function saveTyphoonView(btnEl){
-  const latEl = document.getElementById('typhoonLat');
-  const lonEl = document.getElementById('typhoonLon');
-  const lat = parseFloat(latEl.value);
-  const lon = parseFloat(lonEl.value);
+// Typing raw latitude/longitude never matched what people were actually looking
+// at on the map, so this now geocodes whatever place name is typed (same lookup
+// the main location search uses) and remembers that resolved spot instead.
+async function saveTyphoonView(btnEl){
+  const placeEl = document.getElementById('typhoonPlace');
   const zoom = parseInt(document.getElementById('typhoonZoom').value, 10) || 6;
-  if(isNaN(lat) || isNaN(lon)){
-    // Previously this just silently returned, so a bad/empty field looked
-    // exactly like a successful save — now it's explicit about why nothing happened.
-    latEl.classList.toggle('err-field', isNaN(lat));
-    lonEl.classList.toggle('err-field', isNaN(lon));
+  const query = placeEl.value.trim();
+  if(!query){
+    placeEl.classList.add('err-field');
     const note = document.getElementById('typhoonSavedNote');
-    if(note) note.textContent = 'Enter a valid latitude and longitude before saving.';
+    if(note) note.textContent = 'Type a place name before saving (or use "Center on my location").';
     return;
   }
-  latEl.classList.remove('err-field');
-  lonEl.classList.remove('err-field');
-  const ok = setTyphoonView({lat, lon, zoom});
-  loadTyphoonMap(lat, lon, zoom);
-  flashSaveButton(btnEl, ok ? 'Saved ✓' : 'Save failed');
+  placeEl.classList.remove('err-field');
+  const originalLabel = btnEl.textContent;
+  btnEl.disabled = true;
+  btnEl.textContent = 'Finding place…';
+  try{
+    const {lat, lon, label} = await geocodeCity(query);
+    placeEl.value = label;
+    const ok = setTyphoonView({lat, lon, zoom, label});
+    loadTyphoonMap(lat, lon, zoom);
+    btnEl.disabled = false;
+    btnEl.textContent = originalLabel;
+    flashSaveButton(btnEl, ok ? 'Saved ✓' : 'Save failed');
+  }catch(e){
+    btnEl.disabled = false;
+    btnEl.textContent = originalLabel;
+    const note = document.getElementById('typhoonSavedNote');
+    if(note) note.textContent = e.message || 'Could not find that place. Try being more specific.';
+    return;
+  }
   renderTyphoonSavedNote();
 }
 
@@ -1679,13 +1690,12 @@ function centerTyphoonOnMyLocation(){
     alert('Load a forecast location on the Forecast tab first.');
     return;
   }
-  document.getElementById('typhoonLat').value = CURRENT.lat;
-  document.getElementById('typhoonLon').value = CURRENT.lon;
+  document.getElementById('typhoonPlace').value = CURRENT.label || '';
   document.getElementById('typhoonZoom').value = 7;
-  // Was calling saveTyphoonView() with no button reference, so the save button
-  // never showed its "Saved ✓" flash after using this shortcut — now it reuses
-  // the same save button so the feedback is consistent either way.
-  saveTyphoonView(document.getElementById('typhoonSaveBtn'));
+  const ok = setTyphoonView({lat:CURRENT.lat, lon:CURRENT.lon, zoom:7, label:CURRENT.label});
+  loadTyphoonMap(CURRENT.lat, CURRENT.lon, 7);
+  flashSaveButton(document.getElementById('typhoonSaveBtn'), ok ? 'Saved ✓' : 'Save failed');
+  renderTyphoonSavedNote();
 }
 
 // Best-effort: GDACS publishes a free global disaster feed including active tropical

@@ -1623,16 +1623,14 @@ function setTyphoonView(v){
 // Visible confirmation that the saved map view actually took — the button flash
 // alone is easy to miss, and previously there was no way to tell the save had
 // worked without reloading the page and watching the map reposition.
-function renderTyphoonSavedNote(){
-  const note = document.getElementById('typhoonSavedNote');
-  if(!note) return;
-  const saved = getTyphoonView();
-  note.textContent = saved
-    ? `Currently remembering: ${saved.label || `${Number(saved.lat).toFixed(4)}, ${Number(saved.lon).toFixed(4)}`} (zoom ${saved.zoom}) — this loads automatically next time you open this tab.`
-    : 'No map view saved yet — this tab will default to your forecast location.';
-}
+// Windy's embed is a cross-origin iframe, so this page can never read back
+// where the user actually panned/zoomed to inside it. lastTyphoonView tracks
+// the last position *we* loaded (via "Center on my location" or the initial
+// load), and that's what the plain Save button persists.
+let lastTyphoonView = null;
 
 function loadTyphoonMap(lat, lon, zoom){
+  lastTyphoonView = {lat, lon, zoom};
   const iframe = document.getElementById('typhoonFrame');
   iframe.src = `https://embed.windy.com/embed2.html?lat=${lat}&lon=${lon}&detailLat=${lat}&detailLon=${lon}` +
     `&width=650&height=480&zoom=${zoom}&level=surface&overlay=wind&product=ecmwf&menu=&message=true` +
@@ -1641,48 +1639,19 @@ function loadTyphoonMap(lat, lon, zoom){
 
 function initTyphoonTab(){
   const saved = getTyphoonView();
-  const fallback = CURRENT ? {lat:CURRENT.lat, lon:CURRENT.lon, zoom:7, label:CURRENT.label} : {lat:12.8797, lon:130.0, zoom:5, label:''};
+  const fallback = CURRENT ? {lat:CURRENT.lat, lon:CURRENT.lon, zoom:7} : {lat:12.8797, lon:130.0, zoom:5};
   const view = saved || fallback;
-  document.getElementById('typhoonPlace').value = view.label || '';
-  document.getElementById('typhoonZoom').value = view.zoom;
   loadTyphoonMap(view.lat, view.lon, view.zoom);
   loadActiveTyphoons();
-  renderTyphoonSavedNote();
 }
 
-// Typing raw latitude/longitude never matched what people were actually looking
-// at on the map, so this now geocodes whatever place name is typed (same lookup
-// the main location search uses) and remembers that resolved spot instead.
-async function saveTyphoonView(btnEl){
-  const placeEl = document.getElementById('typhoonPlace');
-  const zoom = parseInt(document.getElementById('typhoonZoom').value, 10) || 6;
-  const query = placeEl.value.trim();
-  if(!query){
-    placeEl.classList.add('err-field');
-    const note = document.getElementById('typhoonSavedNote');
-    if(note) note.textContent = 'Type a place name before saving (or use "Center on my location").';
+function saveTyphoonView(btnEl){
+  if(!lastTyphoonView){
+    flashSaveButton(btnEl, 'Nothing to save yet');
     return;
   }
-  placeEl.classList.remove('err-field');
-  const originalLabel = btnEl.textContent;
-  btnEl.disabled = true;
-  btnEl.textContent = 'Finding place…';
-  try{
-    const {lat, lon, label} = await geocodeCity(query);
-    placeEl.value = label;
-    const ok = setTyphoonView({lat, lon, zoom, label});
-    loadTyphoonMap(lat, lon, zoom);
-    btnEl.disabled = false;
-    btnEl.textContent = originalLabel;
-    flashSaveButton(btnEl, ok ? 'Saved ✓' : 'Save failed');
-  }catch(e){
-    btnEl.disabled = false;
-    btnEl.textContent = originalLabel;
-    const note = document.getElementById('typhoonSavedNote');
-    if(note) note.textContent = e.message || 'Could not find that place. Try being more specific.';
-    return;
-  }
-  renderTyphoonSavedNote();
+  const ok = setTyphoonView(lastTyphoonView);
+  flashSaveButton(btnEl, ok ? 'Saved ✓' : 'Save failed');
 }
 
 function centerTyphoonOnMyLocation(){
@@ -1690,12 +1659,7 @@ function centerTyphoonOnMyLocation(){
     alert('Load a forecast location on the Forecast tab first.');
     return;
   }
-  document.getElementById('typhoonPlace').value = CURRENT.label || '';
-  document.getElementById('typhoonZoom').value = 7;
-  const ok = setTyphoonView({lat:CURRENT.lat, lon:CURRENT.lon, zoom:7, label:CURRENT.label});
   loadTyphoonMap(CURRENT.lat, CURRENT.lon, 7);
-  flashSaveButton(document.getElementById('typhoonSaveBtn'), ok ? 'Saved ✓' : 'Save failed');
-  renderTyphoonSavedNote();
 }
 
 // Best-effort: GDACS publishes a free global disaster feed including active tropical

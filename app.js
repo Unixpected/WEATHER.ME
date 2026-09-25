@@ -1229,8 +1229,12 @@ function reopenLocationPicker(){
   document.getElementById('map').scrollIntoView({behavior:'smooth', block:'center'});
 }
 
-// Places "you are here" + the 5km grid on the already-loaded map, then
-// switches the map into destination-picking mode for the trip checker.
+// Places "you are here" + the 5km grid on the already-loaded map.
+// This used to also flip the map into "pick a trip destination" mode after every
+// weather load — but nothing in the Planner tab UI actually lets you click this
+// map to set a destination (it's a text search box), so that flip just silently
+// broke clicking the map to change your forecast location after your first load.
+// The map now always stays in location-picking mode, matching what's exposed.
 function attachWeatherMarkers(lat, lon){
   if(youMarker) map.removeLayer(youMarker);
   youMarker = L.circleMarker([lat, lon], {radius:8, color:'#4da3ff', fillColor:'#4da3ff', fillOpacity:.9})
@@ -1246,7 +1250,6 @@ function attachWeatherMarkers(lat, lon){
   });
 
   map.setView([lat, lon], 13);
-  mapMode = 'destination';
 }
 
 let tripSuggestDebounce = {};

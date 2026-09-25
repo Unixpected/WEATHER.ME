@@ -51,7 +51,7 @@
     <div id="pickedPanel" class="picked-panel card-surface" style="display:none"><div><small>SELECTED ON MAP</small><strong id="pickedName">—</strong></div><div><button class="primary-btn" onclick="confirmPickedLocation()">Use this spot</button><button class="ghost-btn" onclick="savePickedLocation(this)">☆ Save</button></div></div>
     <div class="map-hint">Click the map for an exact point · <button class="text-btn" onclick="cycleTileProvider()">change map style</button></div>
 
-    <div class="saved-section"><div class="section-heading"><div><span class="eyebrow">YOUR PLACES</span><h2>Saved locations</h2></div></div><div id="savedLocations" class="saved-list"></div></div>
+    <div class="saved-section"><div class="section-heading"><div><span class="eyebrow">YOUR PLACES</span><h2>Saved locations <span id="savedLocationsCount" class="section-note"></span></h2></div></div><div id="savedLocations" class="saved-list"></div></div>
 
     <div id="app" style="display:none">
       <section class="weather-hero" id="weatherHero">
@@ -60,7 +60,7 @@
           <div class="hero-location" id="heroPlace">—</div>
           <div class="hero-temperature"><span id="heroTemp">--°</span><div><strong id="heroCondition">Loading…</strong><small>Feels like <b id="heroFeels">--°</b></small></div></div>
           <div class="hero-sun" id="heroSun">—</div>
-          <div class="hero-actions"><button class="hero-action" onclick="reopenLocationPicker()">⌖ Change location</button><button class="hero-action" onclick="saveCurrentLocation(this)">☆ Save</button></div>
+          <div class="hero-actions"><button class="hero-action primary" onclick="useMyLocation()">⌖ Use my location</button><button class="hero-action" onclick="const b=document.getElementById('manualBox'); b.style.display='block'; document.getElementById('manualCity').focus(); b.scrollIntoView({behavior:'smooth', block:'center'});">⌕ Search</button><button class="hero-action" onclick="saveCurrentLocation(this)">☆ Save</button></div>
         </div>
         <div class="weather-visual"><div class="weather-icon-stage" id="heroIconStage"></div><div class="visual-caption">LOCAL CONDITIONS</div><div class="aqi-chip" id="aqiChip">🍃 AQI —</div></div>
         <div class="metric-grid">

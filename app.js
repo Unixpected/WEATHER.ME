@@ -993,6 +993,18 @@ function deleteSavedLocation(idx){
   setSavedLocations(arr);
   renderSavedLocations();
 }
+function renameSavedLocation(idx){
+  const arr = getSavedLocations();
+  const loc = arr[idx];
+  if(!loc) return;
+  const next = prompt('Rename this saved location:', loc.label);
+  if(next === null) return; // cancelled
+  const trimmed = next.trim();
+  if(!trimmed) return;
+  loc.label = trimmed;
+  setSavedLocations(arr);
+  renderSavedLocations();
+}
 function loadSavedLocation(idx){
   const arr = getSavedLocations();
   const loc = arr[idx];
@@ -1004,14 +1016,17 @@ function loadSavedLocation(idx){
 }
 function renderSavedLocations(){
   const el = document.getElementById('savedLocations');
+  const countEl = document.getElementById('savedLocationsCount');
   const arr = getSavedLocations();
+  if(countEl) countEl.textContent = arr.length ? `(${arr.length})` : '';
   if(!arr.length){
-    el.innerHTML = '<div class="section-sub" style="margin:0;">No saved locations yet — click "Save this location" after picking a spot.</div>';
+    el.innerHTML = '<div class="section-sub" style="margin:0;">No saved locations yet — click "Save" after picking a spot. You can save as many as you like.</div>';
     return;
   }
   el.innerHTML = arr.map((s,i) => `
     <div class="saved-chip">
-      <span class="chip-label" onclick="loadSavedLocation(${i})">📍 ${escapeHtml(s.label)}</span>
+      <span class="chip-label" onclick="loadSavedLocation(${i})" title="Load this location">📍 ${escapeHtml(s.label)}</span>
+      <button class="chip-edit" onclick="renameSavedLocation(${i})" title="Rename">✎</button>
       <button class="chip-del" onclick="deleteSavedLocation(${i})" title="Remove">✕</button>
     </div>
   `).join('');
@@ -1650,19 +1665,29 @@ function loadTyphoonMap(lat, lon, zoom){
 
 async function onTyphoonLocatorClick(e){
   const {lat, lng:lon} = e.latlng;
-  loadTyphoonMap(lat, lon, (lastTyphoonView && lastTyphoonView.zoom) || 7);
+  loadTyphoonMap(lat, lon, typhoonLocatorMap.getZoom());
   const note = document.getElementById('typhoonPickedNote');
   if(note) note.textContent = `Picked: ${lat.toFixed(4)}, ${lon.toFixed(4)} — hit Save to remember this spot.`;
   const name = await reverseGeocode(lat, lon).catch(()=>null);
   if(name && note) note.textContent = `Picked: ${name} (${lat.toFixed(4)}, ${lon.toFixed(4)}) — hit Save to remember this spot.`;
 }
 
-function initTyphoonLocatorMap(startLat, startLon){
-  typhoonLocatorMap = L.map('typhoonLocatorMap', {zoomControl:true}).setView([startLat, startLon], 6);
+// Zooming/panning the locator map without clicking a new point should still
+// update what Save will persist — otherwise zooming in after picking a spot
+// silently gets lost, which is the bug being fixed here.
+function onTyphoonLocatorMove(){
+  if(!lastTyphoonView) return;
+  const c = typhoonLocatorMap.getCenter();
+  lastTyphoonView = {lat:c.lat, lon:c.lng, zoom:typhoonLocatorMap.getZoom()};
+}
+
+function initTyphoonLocatorMap(startLat, startLon, startZoom){
+  typhoonLocatorMap = L.map('typhoonLocatorMap', {zoomControl:true}).setView([startLat, startLon], startZoom);
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
     maxZoom:16, attribution:'Tiles © Esri — Esri, HERE, Garmin, OpenStreetMap contributors'
   }).addTo(typhoonLocatorMap);
   typhoonLocatorMap.on('click', onTyphoonLocatorClick);
+  typhoonLocatorMap.on('zoomend moveend', onTyphoonLocatorMove);
   typhoonLocatorMarker = L.circleMarker([startLat, startLon], {radius:8, color:'#4da3ff', fillColor:'#4da3ff', fillOpacity:.9}).addTo(typhoonLocatorMap);
 }
 
@@ -1671,7 +1696,7 @@ function initTyphoonTab(){
   const fallback = CURRENT ? {lat:CURRENT.lat, lon:CURRENT.lon, zoom:7} : {lat:12.8797, lon:130.0, zoom:5};
   const view = saved || fallback;
   loadTyphoonMap(view.lat, view.lon, view.zoom);
-  initTyphoonLocatorMap(view.lat, view.lon);
+  initTyphoonLocatorMap(view.lat, view.lon, view.zoom);
   loadActiveTyphoons();
 }
 
@@ -1689,7 +1714,8 @@ function centerTyphoonOnMyLocation(){
     alert('Load a forecast location on the Forecast tab first.');
     return;
   }
-  loadTyphoonMap(CURRENT.lat, CURRENT.lon, 7);
+  const zoom = typhoonLocatorMap ? typhoonLocatorMap.getZoom() : 7;
+  loadTyphoonMap(CURRENT.lat, CURRENT.lon, zoom);
   const note = document.getElementById('typhoonPickedNote');
   if(note) note.textContent = `Picked: ${CURRENT.label || `${CURRENT.lat.toFixed(4)}, ${CURRENT.lon.toFixed(4)}`} — hit Save to remember this spot.`;
 }

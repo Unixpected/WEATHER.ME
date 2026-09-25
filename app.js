@@ -1097,7 +1097,7 @@ async function searchCity(){
 // weather data, so there's no lag once the user is ready to click a spot.
 let mapMode = 'location'; // 'location' = picking your own spot, 'destination' = picking a trip target
 let pickedLoc = null;
-let youMarker = null, destMarker = null, gridMarkers = [];
+let youMarker = null, destMarker = null, gridMarkers = [], pickerMarker = null;
 
 // Some networks/proxies/antivirus tools block specific map-tile domains while allowing
 // others. We try providers in order and automatically switch if one fails to load tiles.
@@ -1160,15 +1160,7 @@ function initFrontMap(){
 async function onMapClick(e){
   const {lat, lng:lon} = e.latlng;
   if(mapMode === 'location'){
-    if(youMarker) map.removeLayer(youMarker);
-    youMarker = L.circleMarker([lat, lon], {radius:8, color:'#4da3ff', fillColor:'#4da3ff', fillOpacity:.9}).addTo(map);
-    const panel = document.getElementById('pickedPanel');
-    panel.style.display = 'block';
-    document.getElementById('pickedName').textContent = 'Loading address…';
-    pickedLoc = {lat, lon, label:null};
-    const name = await reverseGeocode(lat, lon);
-    pickedLoc.label = name;
-    document.getElementById('pickedName').innerHTML = `📍 <b>${escapeHtml(name)}</b> (${lat.toFixed(4)}, ${lon.toFixed(4)})`;
+    updatePickedLocation(lat, lon);
   } else {
     if(destMarker) map.removeLayer(destMarker);
     destMarker = L.marker([lat, lon]).addTo(map).bindPopup('Destination').openPopup();
@@ -1179,6 +1171,47 @@ async function onMapClick(e){
     toInput.dataset.lat = lat;
     toInput.dataset.lon = lon;
   }
+}
+
+// Shared by click-to-place and drag-to-place, so both land in the exact same
+// state: a picked spot the person can inspect and Save *without* it touching
+// CURRENT or requiring "Use this spot" first — picking a location on the map
+// should not require you to first search for it by name.
+async function updatePickedLocation(lat, lon){
+  if(pickerMarker){
+    pickerMarker.setLatLng([lat, lon]);
+  } else {
+    // A plain L.marker (not circleMarker) so it supports native drag-and-drop.
+    pickerMarker = L.marker([lat, lon], {draggable:true, icon: pickerIcon()}).addTo(map);
+    pickerMarker.on('dragend', () => {
+      const p = pickerMarker.getLatLng();
+      updatePickedLocation(p.lat, p.lng);
+    });
+  }
+  const panel = document.getElementById('pickedPanel');
+  panel.style.display = 'block';
+  document.getElementById('pickedName').textContent = 'Loading address…';
+  pickedLoc = {lat, lon, label:null};
+  const name = await reverseGeocode(lat, lon);
+  pickedLoc.label = name;
+  document.getElementById('pickedName').innerHTML = `📍 <b>${escapeHtml(name)}</b> (${lat.toFixed(4)}, ${lon.toFixed(4)}) <small style="opacity:.7">— drag the pin to fine-tune</small>`;
+}
+
+// Leaflet's default marker image is hosted on unpkg's dist folder alongside
+// leaflet.js, which is already an allowed script host, but the default icon
+// PNG path resolution can break depending on how the page bundles assets —
+// a small inline SVG pin sidesteps that entirely and matches the app's palette.
+function pickerIcon(){
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="42" viewBox="0 0 30 42">
+    <path d="M15 0C6.7 0 0 6.7 0 15c0 10.5 15 27 15 27s15-16.5 15-27C30 6.7 23.3 0 15 0z" fill="#4da3ff" stroke="#06111e" stroke-width="1.5"/>
+    <circle cx="15" cy="15" r="6" fill="#06111e"/>
+  </svg>`;
+  return L.divIcon({
+    html: svg,
+    className: 'picker-pin',
+    iconSize: [30, 42],
+    iconAnchor: [15, 42]
+  });
 }
 
 function confirmPickedLocation(){
@@ -1192,7 +1225,7 @@ function confirmPickedLocation(){
 function reopenLocationPicker(){
   mapMode = 'location';
   document.getElementById('pickedPanel').style.display = 'block';
-  document.getElementById('pickedName').textContent = 'Click your spot on the map above.';
+  document.getElementById('pickedName').textContent = 'Click or drag the pin on the map above.';
   document.getElementById('map').scrollIntoView({behavior:'smooth', block:'center'});
 }
 

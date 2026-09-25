@@ -60,6 +60,8 @@ input.err-field{border-color:var(--bad);box-shadow:0 0 0 3px rgba(255,111,125,.1
 .chunk-header .chev{margin-left:auto; color:var(--muted); transition:transform .15s;}
 .chunk-header.open .chev{transform:rotate(180deg);}
 .chunk-header .m-desc{font-weight:500;}
+.chunk-body{display:none;}
+.chunk-body.open{display:block; animation:fade .2s;}
 
 /* Trip checker From/To result cards: were rendering as plain unstyled text */
 .trip-detail{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;}

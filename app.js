@@ -23,6 +23,155 @@ let CURRENT = null; // {lat, lon, label}
 let map = null;
 let lastUpdatedAt = null;
 
+// --- Plain-language "what to wear" one-liner, built from the same consensus
+// numbers already driving the hero and insights — no extra fetch needed. ---
+function wearAdvice(temp, rain, wind){
+  const parts = [];
+  if(rain !== null && rain !== undefined){
+    if(rain >= 50) parts.push('bring an umbrella');
+    else if(rain >= 20) parts.push('pack a small umbrella just in case');
+  }
+  if(temp !== null && temp !== undefined){
+    if(temp >= 32) parts.push('light, breathable clothing');
+    else if(temp >= 26) parts.push('light clothing');
+    else if(temp >= 20) parts.push('a light layer');
+    else parts.push('a jacket');
+  }
+  if(wind !== null && wind !== undefined && wind >= 30) parts.push('something windproof');
+  if(!parts.length) return 'Dress comfortably — nothing extreme in the forecast.';
+  const line = parts.join(', ');
+  return line.charAt(0).toUpperCase() + line.slice(1) + '.';
+}
+
+// --- Offline / last-known-conditions cache. Stores just the small set of
+// numbers the hero needs, so a failed fetch can still show something real
+// instead of a bare error card. ---
+const FORECAST_CACHE_KEY = 'skypulse_lastForecast';
+function cacheForecastSnapshot(snap){
+  try{ localStorage.setItem(FORECAST_CACHE_KEY, JSON.stringify(snap)); }catch(e){}
+}
+function loadForecastCache(){
+  try{ return JSON.parse(localStorage.getItem(FORECAST_CACHE_KEY) || 'null'); }catch(e){ return null; }
+}
+function renderStaleForecast(cache, lat, lon, label, err){
+  document.getElementById('heroTemp').textContent = `${cache.temp?.toFixed?.(0) ?? '--'}°`;
+  document.getElementById('heroCondition').textContent = `${cache.conditionIcon ?? ''} ${cache.conditionText ?? ''}`.trim();
+  document.getElementById('heroRain').textContent = `${cache.rain?.toFixed?.(0) ?? '--'}%`;
+  document.getElementById('heroWind').textContent = `${cache.wind?.toFixed?.(1) ?? '--'} km/h`;
+  document.getElementById('heroFeels').textContent = `${cache.feels?.toFixed?.(0) ?? '--'}°`;
+  document.getElementById('heroHumidity').textContent = `${cache.humidity?.toFixed?.(0) ?? '--'}%`;
+  document.getElementById('heroCloud').textContent = `${cache.cloud?.toFixed?.(0) ?? '--'}%`;
+  document.getElementById('heroPlace').textContent = cache.label || label || '—';
+  document.getElementById('wearAdvice').textContent = `👕 ${wearAdvice(cache.temp, cache.rain, cache.wind)}`;
+
+  const mins = Math.max(0, Math.round((Date.now() - (cache.savedAt || Date.now())) / 60000));
+  const ageText = mins < 1 ? 'just now' : (mins < 60 ? `${mins}m ago` : `${Math.round(mins/60)}h ago`);
+  const staleBanner = document.getElementById('staleBanner');
+  if(staleBanner){
+    staleBanner.style.display = 'flex';
+    staleBanner.innerHTML = `
+      <span>⚠️ Last known conditions from ${ageText} (stale) — couldn't reach the forecast server (${escapeHtml(err?.message || 'network error')}).</span>
+      <button type="button" id="staleRetryBtn" class="text-btn">Try again</button>
+    `;
+    const retryBtn = document.getElementById('staleRetryBtn');
+    if(retryBtn) retryBtn.addEventListener('click', () => runForLocation(lat, lon, label));
+  }
+  statusEl.style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+}
+
+// --- Auto-refresh: quietly re-fetch the current location every ~12 minutes
+// while the tab is actually visible, so "Updated Xm ago" doesn't just sit
+// there stale. Only one interval is ever scheduled. ---
+let autoRefreshTimer = null;
+function scheduleAutoRefresh(){
+  if(autoRefreshTimer) return;
+  autoRefreshTimer = setInterval(() => {
+    if(!CURRENT || document.visibilityState !== 'visible') return;
+    runForLocation(CURRENT.lat, CURRENT.lon, CURRENT.label);
+  }, 12*60*1000);
+}
+
+// --- Rain alert notifications: uses the existing 15-min nowcast (finePoints)
+// to warn the user shortly before rain is expected to start, instead of
+// making them check the app. Opt-in via the bell button in the topbar. ---
+function isRainAlertEnabled(){
+  try{ return localStorage.getItem('rainAlertsEnabled') === '1'; }catch(e){ return false; }
+}
+function updateRainAlertBtn(){
+  const btn = document.getElementById('rainAlertBtn');
+  if(!btn) return;
+  const on = isRainAlertEnabled() && 'Notification' in window && Notification.permission === 'granted';
+  btn.classList.toggle('theme-active', on);
+  btn.textContent = on ? '🔔' : '🔕';
+  btn.title = on ? 'Rain alerts on — tap to turn off' : 'Get notified before it rains';
+}
+async function toggleRainAlerts(){
+  if(!('Notification' in window)){
+    alert('Notifications aren\'t supported in this browser.');
+    return;
+  }
+  if(isRainAlertEnabled()){
+    try{ localStorage.setItem('rainAlertsEnabled', '0'); }catch(e){}
+    updateRainAlertBtn();
+    return;
+  }
+  let perm = Notification.permission;
+  if(perm === 'default'){ perm = await Notification.requestPermission(); }
+  if(perm !== 'granted'){
+    alert('Notifications are blocked for this site — enable them in your browser settings to get rain alerts.');
+    updateRainAlertBtn();
+    return;
+  }
+  try{ localStorage.setItem('rainAlertsEnabled', '1'); }catch(e){}
+  updateRainAlertBtn();
+  try{ new Notification('🔔 Rain alerts on', {body:'We\'ll let you know when rain looks likely soon.'}); }catch(e){}
+}
+function checkRainAlert(finePoints){
+  if(!isRainAlertEnabled() || !('Notification' in window) || Notification.permission !== 'granted') return;
+  if(!finePoints || !finePoints.length || !CURRENT) return;
+  const RAIN_MM_THRESHOLD = 0.2;
+  const now = new Date();
+  if(finePoints[0].precipMm >= RAIN_MM_THRESHOLD) return; // already raining now, nothing to warn about
+  const upcoming = finePoints.find(p => p.precipMm >= RAIN_MM_THRESHOLD);
+  if(!upcoming) return;
+  const minsAway = Math.round((new Date(upcoming.time) - now) / 60000);
+  if(minsAway < 5 || minsAway > 90) return; // only near-term, meaningful warnings
+  let lastAlerted = null;
+  try{ lastAlerted = JSON.parse(localStorage.getItem('rainAlertLast') || 'null'); }catch(e){}
+  const alertKey = `${CURRENT.lat.toFixed(2)},${CURRENT.lon.toFixed(2)}`;
+  if(lastAlerted && lastAlerted.key === alertKey && lastAlerted.time === upcoming.time) return; // don't repeat the same warning
+  try{
+    new Notification('🌧️ Rain expected soon', {
+      body: `Rain looks likely in about ${minsAway} min near ${CURRENT.label || 'your location'}.`
+    });
+    localStorage.setItem('rainAlertLast', JSON.stringify({key:alertKey, time:upcoming.time, sentAt:Date.now()}));
+  }catch(e){ console.error('Notification failed', e); }
+}
+
+// --- PWA install prompt: manifest already exists, just surface the browser's
+// native install flow instead of leaving it undiscoverable. ---
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  const btn = document.getElementById('installBtn');
+  if(btn) btn.style.display = 'inline-flex';
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  const btn = document.getElementById('installBtn');
+  if(btn) btn.style.display = 'none';
+});
+async function installApp(){
+  if(!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  const btn = document.getElementById('installBtn');
+  if(btn) btn.style.display = 'none';
+}
+
 function updateLastUpdatedLabel(){
   const el = document.getElementById('lastUpdated');
   if(!el || !lastUpdatedAt) return;
@@ -1500,6 +1649,16 @@ async function runForLocation(lat, lon, label){
     document.getElementById('heroHumidity').textContent = `${consensusHumidity?.toFixed(0) ?? '--'}%`;
     document.getElementById('heroCloud').textContent = `${consensusCloud?.toFixed(0) ?? '--'}%`;
     document.getElementById('heroPlace').textContent = `${label}`;
+    document.getElementById('wearAdvice').textContent = `👕 ${wearAdvice(consensusTemp, consensusRain, consensusWind)}`;
+    const staleBannerEl = document.getElementById('staleBanner');
+    if(staleBannerEl) staleBannerEl.style.display = 'none';
+    cacheForecastSnapshot({
+      lat, lon, label,
+      temp: consensusTemp, conditionIcon: nowCondition.icon, conditionText: nowCondition.text,
+      rain: consensusRain, wind: consensusWind, feels: consensusFeels,
+      humidity: consensusHumidity, cloud: consensusCloud, savedAt: Date.now()
+    });
+    scheduleAutoRefresh();
 
     // Update widgets that exist in the SkyPulse redesign.
     // The older UI had separate humidity/feels-like/wind/sun gauge containers;
@@ -1587,6 +1746,7 @@ async function runForLocation(lat, lon, label){
     renderMinuteList(finePoints);
     renderHourPicker(groupFinePointsByHour(finePoints), null);
     renderHourCards(finePoints);
+    checkRainAlert(finePoints);
 
     loadMicroGrid(lat, lon);
 
@@ -1646,6 +1806,11 @@ async function runForLocation(lat, lon, label){
     updateLastUpdatedLabel();
   }catch(err){
     console.error(err);
+    const cache = loadForecastCache();
+    if(cache){
+      renderStaleForecast(cache, lat, lon, label, err);
+      return;
+    }
     statusEl.style.display = 'block';
     statusEl.innerHTML = `
       <div class="error-card" role="alert">
@@ -1931,6 +2096,7 @@ async function loadActiveTyphoons(){
 
 initFrontMap();
 renderSavedLocations();
+updateRainAlertBtn();
 // Auto-detect the user's location on first load so they see real weather
 // immediately, instead of waiting for a manual "Use my location" click.
 useMyLocation();

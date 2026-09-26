@@ -238,26 +238,41 @@ function stddev(arr){
   return Math.sqrt(a.reduce((s,v)=>s+(v-m)**2,0)/a.length);
 }
 
-// Rather than trusting either provider's own "chance of rain" field (defined
-// differently by each), we compute our own honest metric: what % of the providers
-// forecast measurable rain (>0.1mm) at this hour, from their real forecast amounts.
-function precipAgreementPct(values){
+// Three of our four providers (OpenWeatherMap, WeatherAPI.com, Visual Crossing) publish
+// their own calibrated probability-of-precipitation for each hour — a real confidence
+// figure, not something we're guessing at. We prefer the median of those real values.
+// Only when none of them have one for this hour do we fall back to our own amount vote
+// (what % of providers forecast more than a light trace), since a couple of models
+// showing 0.1–0.2mm of "phantom" precip is common numerical noise, not real rain.
+const RAIN_TRACE_THRESHOLD_MM = 0.2;
+function precipAgreementPct(values, probValues){
+  if(probValues){
+    const probMedian = median(probValues);
+    if(probMedian !== null) return Math.round(probMedian);
+  }
   const valid = values.filter(v => v !== null && v !== undefined && !isNaN(v));
   if(!valid.length) return null;
-  const rainingCount = valid.filter(v => v > 0.1).length;
+  const rainingCount = valid.filter(v => v > RAIN_TRACE_THRESHOLD_MM).length;
   return Math.round((rainingCount/valid.length)*100);
 }
 
-// Same idea as precipAgreementPct, but also names which specific models forecast rain,
-// so the person can see exactly how split (or unanimous) the models actually are.
-function computeAgreement(precip, hourIdx){
+// Same idea as precipAgreementPct, but also names which specific providers forecast
+// rain (from the amount data), so the person can see exactly how split things are —
+// while still preferring real provider probabilities for the headline percentage.
+function computeAgreement(precip, hourIdx, precipProb){
   if(hourIdx < 0) return {pct:null, count:0, total:0, names:[]};
   const infos = PROVIDERS.map(m => ({name:m.name, val: precip[m.key][hourIdx]}))
     .filter(o => o.val !== null && o.val !== undefined && !isNaN(o.val));
   if(!infos.length) return {pct:null, count:0, total:0, names:[]};
-  const raining = infos.filter(o => o.val > 0.1);
+  const raining = infos.filter(o => o.val > RAIN_TRACE_THRESHOLD_MM);
+  let pct = Math.round((raining.length/infos.length)*100);
+  if(precipProb){
+    const probVals = PROVIDERS.map(m => precipProb[m.key]?.[hourIdx]).filter(v => v !== null && v !== undefined && !isNaN(v));
+    const probMedian = median(probVals);
+    if(probMedian !== null) pct = Math.round(probMedian);
+  }
   return {
-    pct: Math.round((raining.length/infos.length)*100),
+    pct,
     count: raining.length,
     total: infos.length,
     names: raining.map(o=>o.name)
@@ -347,6 +362,7 @@ function normalizeVisualCrossing(json){
         date: new Date(`${day.datetime}T${h.datetime}`),
         temp: h.temp ?? null,
         precip: h.precip ?? 0,
+        precipProb: h.precipprob ?? null,
         wind: h.windspeed ?? null, // already km/h under unitGroup=metric
         windDir: h.winddir ?? null,
         cloud: h.cloudcover ?? null,
@@ -418,7 +434,7 @@ async function fetchProviders(lat, lon){
   const msLookup = buildNearestLookup(normalizeMeteosource(msJson), it => it.date);
   const vcLookup = buildNearestLookup(normalizeVisualCrossing(vcJson), it => it.date);
 
-  const FIELDS = ['temperature_2m','precipitation','wind_speed_10m','wind_direction_10m',
+  const FIELDS = ['temperature_2m','precipitation','precip_probability','wind_speed_10m','wind_direction_10m',
     'cloud_cover','relative_humidity_2m','pressure_msl','apparent_temperature','uv_index'];
   const time = [];
   const series = {};
@@ -440,6 +456,9 @@ async function fetchProviders(lat, lon){
     series.pressure_msl_owm.push(o ? o.main.pressure : null);
     series.apparent_temperature_owm.push(o ? o.main.feels_like : null);
     series.uv_index_owm.push(null); // not on this OWM plan
+    // OWM's own "probability of precipitation" for this 3-hour block — a real,
+    // model-derived confidence figure, not something we're inferring from amount alone.
+    series.precip_probability_owm.push(o ? Math.round((o.pop||0)*100) : null);
 
     series.temperature_2m_wapi.push(h.temp_c);
     series.precipitation_wapi.push(h.precip_mm ?? 0);
@@ -450,6 +469,7 @@ async function fetchProviders(lat, lon){
     series.pressure_msl_wapi.push(h.pressure_mb);
     series.apparent_temperature_wapi.push(h.feelslike_c);
     series.uv_index_wapi.push(h.uv ?? null);
+    series.precip_probability_wapi.push(h.chance_of_rain ?? null);
 
     const m = msLookup(t);
     series.temperature_2m_ms.push(m ? m.temp : null);
@@ -461,6 +481,7 @@ async function fetchProviders(lat, lon){
     series.pressure_msl_ms.push(m ? m.pressure : null);
     series.apparent_temperature_ms.push(m ? m.feels : null);
     series.uv_index_ms.push(m ? m.uv : null);
+    series.precip_probability_ms.push(null); // not available on Meteosource's free plan
 
     const v = vcLookup(t);
     series.temperature_2m_vc.push(v ? v.temp : null);
@@ -472,6 +493,7 @@ async function fetchProviders(lat, lon){
     series.pressure_msl_vc.push(v ? v.pressure : null);
     series.apparent_temperature_vc.push(v ? v.feels : null);
     series.uv_index_vc.push(v ? v.uv : null);
+    series.precip_probability_vc.push(v ? v.precipProb : null);
   });
 
   return {hourly: {time, ...series}, daily: buildDailyFromWapi(wapiJson)};
@@ -589,6 +611,7 @@ function buildFineNowcast(hourlyProviders, startIdx){
   const times = hourlyProviders.time;
   const temps = modelSeries(hourlyProviders, 'temperature_2m');
   const precip = modelSeries(hourlyProviders, 'precipitation');
+  const precipProb = modelSeries(hourlyProviders, 'precip_probability');
   const clouds = modelSeries(hourlyProviders, 'cloud_cover');
 
   const hourlyTemp = times.map((_, i) => median(PROVIDERS.map(m => temps[m.key][i])));
@@ -615,7 +638,7 @@ function buildFineNowcast(hourlyProviders, startIdx){
       points.push({
         time: t.toISOString(),
         temp, cloud,
-        agreement: computeAgreement(precip, i),
+        agreement: computeAgreement(precip, i, precipProb),
         precipMm: (hourlyPrecip[i] ?? 0) / 4
       });
     }
@@ -852,7 +875,7 @@ function conditionLabel(mmPerHour, cloudPct, agreementPct, isDay){
   let rainName = null;
   if(mmPerHour > 4) rainName = 'Heavy Rain';
   else if(mmPerHour > 0.5) rainName = 'Moderate Rain';
-  else if(mmPerHour > 0.05) rainName = 'Light Rain';
+  else if(mmPerHour > 0.15) rainName = 'Light Rain';
 
   if(rainName){
     // ⛈️/🌧️ are neutral (no sun drawn in them), safe for day or night.
@@ -1759,6 +1782,7 @@ async function runForLocation(lat, lon, label){
 
     const temps = modelSeries(hourly, 'temperature_2m');
     const precip = modelSeries(hourly, 'precipitation');
+    const precipProb = modelSeries(hourly, 'precip_probability');
     const winds = modelSeries(hourly, 'wind_speed_10m');
     const clouds = modelSeries(hourly, 'cloud_cover');
     const feelsLikeSeries = modelSeries(hourly, 'apparent_temperature');
@@ -1769,6 +1793,7 @@ async function runForLocation(lat, lon, label){
 
     const curTemps = PROVIDERS.map(m => temps[m.key][startIdx]);
     const curPrecip = PROVIDERS.map(m => precip[m.key][startIdx]);
+    const curPrecipProb = PROVIDERS.map(m => precipProb[m.key][startIdx]);
     const curWinds = PROVIDERS.map(m => winds[m.key][startIdx]);
     const curClouds = PROVIDERS.map(m => clouds[m.key][startIdx]);
     const curFeels = PROVIDERS.map(m => feelsLikeSeries[m.key][startIdx]);
@@ -1778,7 +1803,7 @@ async function runForLocation(lat, lon, label){
     const curUV = PROVIDERS.map(m => uvSeries[m.key][startIdx]);
 
     const consensusTemp = median(curTemps);
-    const consensusRain = precipAgreementPct(curPrecip);
+    const consensusRain = precipAgreementPct(curPrecip, curPrecipProb);
     const consensusWind = median(curWinds);
     const consensusCloud = median(curClouds);
     const consensusPrecipAmt = median(curPrecip);
@@ -1849,7 +1874,7 @@ async function runForLocation(lat, lon, label){
     loadFiveDay(lat, lon);
 
     document.getElementById('modelLegend').innerHTML =
-      `Providers in this forecast: <b>${PROVIDERS.map(m=>m.name).join(', ')}</b> — temperature/wind/cloud consensus is the median across both. Rain chance = % of these providers forecasting measurable rain (not a borrowed probability field from either source).`;
+      `Providers in this forecast: <b>${PROVIDERS.map(m=>m.name).join(', ')}</b> — temperature/wind/cloud consensus is the median across all of them. Rain chance uses each provider's own calibrated probability-of-precipitation where they publish one (OpenWeatherMap, WeatherAPI.com, Visual Crossing), falling back to an amount-based vote only when none is available.`;
 
     const confBadge = document.getElementById('confBadge');
     if(spread < 1.5){ confBadge.className = 'badge high'; confBadge.textContent = 'High Confidence'; }
@@ -1884,7 +1909,7 @@ async function runForLocation(lat, lon, label){
     // Check if rain risk climbs later in the day (next 6 hours) for a "rain risk increases after X" style note
     const laterIdx = Math.min(startIdx + 6, hourly.time.length - 1);
     if(laterIdx > startIdx){
-      const laterRain = precipAgreementPct(PROVIDERS.map(m => precip[m.key][laterIdx]));
+      const laterRain = precipAgreementPct(PROVIDERS.map(m => precip[m.key][laterIdx]), PROVIDERS.map(m => precipProb[m.key][laterIdx]));
       if(laterRain !== null && consensusRain !== null && laterRain - consensusRain >= 25){
         insights.push({icon:'📈', text:`Rain risk increases later — model agreement climbs to ${laterRain}% around ${fmtHour(hourly.time[laterIdx])}.`});
       }
@@ -1914,7 +1939,7 @@ async function runForLocation(lat, lon, label){
       tension:.3, pointRadius:0, borderWidth:1.4
     }));
     const consensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => temps[m.key][startIdx+i])));
-    const rainConsensusData = chartLabels.map((_,i) => precipAgreementPct(PROVIDERS.map(m => precip[m.key][startIdx+i])));
+    const rainConsensusData = chartLabels.map((_,i) => precipAgreementPct(PROVIDERS.map(m => precip[m.key][startIdx+i]), PROVIDERS.map(m => precipProb[m.key][startIdx+i])));
     const cloudConsensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => clouds[m.key][startIdx+i])));
     const precipAmtData = chartLabels.map((_,i) => median(PROVIDERS.map(m => precip[m.key][startIdx+i])));
     chartDatasets.push({label:'Consensus', data:consensusData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});

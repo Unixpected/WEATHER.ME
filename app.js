@@ -238,41 +238,36 @@ function stddev(arr){
   return Math.sqrt(a.reduce((s,v)=>s+(v-m)**2,0)/a.length);
 }
 
-// Three of our four providers (OpenWeatherMap, WeatherAPI.com, Visual Crossing) publish
-// their own calibrated probability-of-precipitation for each hour — a real confidence
-// figure, not something we're guessing at. We prefer the median of those real values.
-// Only when none of them have one for this hour do we fall back to our own amount vote
-// (what % of providers forecast more than a light trace), since a couple of models
-// showing 0.1–0.2mm of "phantom" precip is common numerical noise, not real rain.
 const RAIN_TRACE_THRESHOLD_MM = 0.2;
+// Canonical per-provider rain% — used everywhere a rain number is shown, so the hero
+// card, the insights, the hour cards, and both charts' consensus lines always agree
+// with each other instead of drifting apart under slightly different formulas.
+// Uses that provider's own calibrated probability where it publishes one; otherwise
+// falls back to a plain 0%/100% read of whether its own forecast amount is more than
+// a light trace (providers routinely show 0.1–0.2mm of numerical noise on dry days).
+function providerRainPct(mm, prob){
+  if(prob !== null && prob !== undefined && !isNaN(prob)) return prob;
+  if(mm === null || mm === undefined || isNaN(mm)) return null;
+  return mm > RAIN_TRACE_THRESHOLD_MM ? 100 : 0;
+}
 function precipAgreementPct(values, probValues){
-  if(probValues){
-    const probMedian = median(probValues);
-    if(probMedian !== null) return Math.round(probMedian);
-  }
-  const valid = values.filter(v => v !== null && v !== undefined && !isNaN(v));
-  if(!valid.length) return null;
-  const rainingCount = valid.filter(v => v > RAIN_TRACE_THRESHOLD_MM).length;
-  return Math.round((rainingCount/valid.length)*100);
+  const pcts = values.map((mm,i) => providerRainPct(mm, probValues ? probValues[i] : undefined));
+  const m = median(pcts);
+  return m === null ? null : Math.round(m);
 }
 
-// Same idea as precipAgreementPct, but also names which specific providers forecast
-// rain (from the amount data), so the person can see exactly how split things are —
-// while still preferring real provider probabilities for the headline percentage.
+// Same canonical per-provider % as above, but also names which providers are actually
+// forecasting rain (pct >= 50) for the descriptive "X of Y providers" text.
 function computeAgreement(precip, hourIdx, precipProb){
   if(hourIdx < 0) return {pct:null, count:0, total:0, names:[]};
-  const infos = PROVIDERS.map(m => ({name:m.name, val: precip[m.key][hourIdx]}))
-    .filter(o => o.val !== null && o.val !== undefined && !isNaN(o.val));
+  const infos = PROVIDERS.map(m => ({
+    name: m.name,
+    pct: providerRainPct(precip[m.key][hourIdx], precipProb ? precipProb[m.key]?.[hourIdx] : undefined)
+  })).filter(o => o.pct !== null);
   if(!infos.length) return {pct:null, count:0, total:0, names:[]};
-  const raining = infos.filter(o => o.val > RAIN_TRACE_THRESHOLD_MM);
-  let pct = Math.round((raining.length/infos.length)*100);
-  if(precipProb){
-    const probVals = PROVIDERS.map(m => precipProb[m.key]?.[hourIdx]).filter(v => v !== null && v !== undefined && !isNaN(v));
-    const probMedian = median(probVals);
-    if(probMedian !== null) pct = Math.round(probMedian);
-  }
+  const raining = infos.filter(o => o.pct >= 50);
   return {
-    pct,
+    pct: Math.round(median(infos.map(o => o.pct))),
     count: raining.length,
     total: infos.length,
     names: raining.map(o=>o.name)
@@ -658,13 +653,7 @@ function buildFineRainByProvider(hourlyProviders, startIdx){
 
   const hourlyPct = {};
   PROVIDERS.forEach(p => {
-    hourlyPct[p.key] = times.map((_, i) => {
-      const prob = precipProb[p.key][i];
-      if(prob !== null && prob !== undefined && !isNaN(prob)) return prob;
-      const mm = precip[p.key][i];
-      if(mm === null || mm === undefined || isNaN(mm)) return null;
-      return mm > RAIN_TRACE_THRESHOLD_MM ? 100 : 0;
-    });
+    hourlyPct[p.key] = times.map((_, i) => providerRainPct(precip[p.key][i], precipProb[p.key][i]));
   });
 
   const now = new Date();

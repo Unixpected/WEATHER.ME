@@ -1363,19 +1363,19 @@ async function checkTrip(){
       <div class="section-sub" style="margin:8px 0 0;">${explanation}</div>
       <div class="trip-detail">
         <div class="trip-point">
-          <div class="label">From — ${fromLoc.label || 'Your location'}</div>
+          <div class="label">From — ${escapeHtml(fromLoc.label || 'Your location')}</div>
           <div style="font-size:1.1rem; margin-top:4px;">${fCond.icon} ${fCond.text}</div>
           <div style="font-size:1.2rem; font-weight:700;">${fTemp?.toFixed(1) ?? '--'}°</div>
         </div>
         <div class="trip-point">
-          <div class="label">To — ${toLoc.label || toVal}</div>
+          <div class="label">To — ${escapeHtml(toLoc.label || toVal)}</div>
           <div style="font-size:1.1rem; margin-top:4px;">${tCond.icon} ${tCond.text}</div>
           <div style="font-size:1.2rem; font-weight:700;">${tTemp?.toFixed(1) ?? '--'}°</div>
         </div>
       </div>
     `;
   }catch(e){
-    resultEl.innerHTML = `<span class="err">${e.message}</span>`;
+    resultEl.innerHTML = `<span class="err">${escapeHtml(e.message)}</span>`;
   }
 }
 
@@ -1651,9 +1651,15 @@ async function runForLocation(lat, lon, label){
       <div class="error-card" role="alert">
         <div class="ec-icon">⚠️</div>
         <div class="ec-title">Unable to load weather data</div>
-        <div class="ec-detail">Check your connection and try again. (${err.message})</div>
-        <button onclick="runForLocation(${lat}, ${lon}, ${JSON.stringify(label)})">Retry</button>
+        <div class="ec-detail">Check your connection and try again. (${escapeHtml(err.message)})</div>
+        <button type="button" id="retryFetchBtn" data-lat="${lat}" data-lon="${lon}" data-label="${escapeHtml(label ?? '')}">Retry</button>
       </div>`;
+    const retryBtn = document.getElementById('retryFetchBtn');
+    if(retryBtn){
+      retryBtn.addEventListener('click', () => {
+        runForLocation(parseFloat(retryBtn.dataset.lat), parseFloat(retryBtn.dataset.lon), retryBtn.dataset.label);
+      });
+    }
   }
 }
 

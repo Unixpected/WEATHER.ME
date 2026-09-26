@@ -26,7 +26,7 @@
 </header>
 <main class="shell">
   <section class="hero-intro">
-    <div><span class="eyebrow">LIVE LOCAL FORECAST</span><h1>Weather, without the guesswork.</h1><p>Six independent forecast models, short-term nowcast, local variation and practical recommendations in one view.</p></div>
+    <div><span class="eyebrow">LIVE LOCAL FORECAST</span><h1>Weather, without the guesswork.</h1><p>Consensus across independent weather providers, short-term nowcast, local variation and practical recommendations in one view.</p></div>
     <div class="hero-status"><span class="live-dot"></span><span>Live forecast</span></div>
   </section>
 
@@ -92,7 +92,7 @@
   <div id="toolsTab" style="display:none">
     <section class="tools-hero card-surface"><span class="eyebrow">TRAVEL ASSISTANT</span><h2>Plan before you go.</h2><p>Compare weather at your starting point and destination for the time you expect to travel.</p></section>
     <section class="planner-card card-surface"><div class="planner-route"><div class="field"><label>FROM</label><div class="input-wrap"><span>●</span><input id="tripFrom" type="text" placeholder="Current forecast location" oninput="onTripInput('from')" onblur="hideTripSuggestionsDelayed('from')"><div id="tripFromSuggestions" class="suggestions" style="display:none"></div></div></div><div class="route-line"></div><div class="field"><label>TO</label><div class="input-wrap"><span>⌖</span><input id="tripTo" type="text" placeholder="Destination" oninput="onTripInput('to')" onblur="hideTripSuggestionsDelayed('to')"><div id="tripToSuggestions" class="suggestions" style="display:none"></div></div></div></div><div class="planner-bottom"><div class="field"><label>DEPARTURE</label><select id="tripWhen"><option value="0">Now</option><option value="1">In 1 hour</option><option value="2">In 2 hours</option><option value="3">In 3 hours</option><option value="5">In 5 hours</option></select></div><button class="primary-btn large" onclick="checkTrip()">Check my trip →</button></div><div id="tripResult" class="trip-result"></div></section>
-    <section class="section-block"><div class="section-heading"><div><span class="eyebrow">FORECAST MODELS</span><h2>Model comparison</h2></div></div><div class="chart-card card-surface"><canvas id="chart" height="110"></canvas><div id="chartLegend" class="legend-row"></div></div><div id="modelLegend" class="data-note"></div></section>
+    <section class="section-block"><div class="section-heading"><div><span class="eyebrow">FORECAST PROVIDERS</span><h2>Provider comparison</h2></div></div><div class="chart-card card-surface"><canvas id="chart" height="110"></canvas><div id="chartLegend" class="legend-row"></div></div><div id="modelLegend" class="data-note"></div></section>
   </div>
 
   <div id="typhoonTab" style="display:none">
@@ -105,6 +105,6 @@
     <div class="official-alert" style="border-color:rgba(99,179,255,.22);background:rgba(99,179,255,.05);"><div class="official-icon" style="background:rgba(99,179,255,.12);color:var(--accent);">☔</div><div><b>PAGASA rainfall warning signals</b><p><b>Yellow</b> — heavy rain possible, monitor conditions. <b>Orange</b> — intense rain expected, flooding possible in low-lying/flood-prone areas. <b>Red</b> — torrential rain expected, serious flooding likely. These signals are issued by PAGASA directly and are not derived from the model consensus on this page — always check the source.</p><a href="https://www.pagasa.dost.gov.ph/tropical-cyclone/severe-weather-bulletin" target="_blank" rel="noopener">Check current rainfall warnings →</a></div></div>
   </div>
 </main>
-<footer class="footer">SkyPulse · Open-Meteo models · OpenStreetMap · Windy · GDACS · PAGASA official source for Philippine warnings</footer>
+<footer class="footer">SkyPulse · <a href="https://openweathermap.org/" target="_blank" rel="noopener" style="color:inherit;">OpenWeatherMap</a> · <a href="https://www.weatherapi.com/" target="_blank" rel="noopener" style="color:inherit;">WeatherAPI.com</a> · OpenStreetMap · Windy · Global Disaster Alert and Coordination System, GDACS · PAGASA official source for Philippine warnings · <a href="admin.html" style="color:inherit;">Admin</a></footer>
 <script src="app.js?v=20260911"></script>
 </body></html>

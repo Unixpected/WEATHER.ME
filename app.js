@@ -212,16 +212,11 @@ function initTheme(){
 }
 initTheme();
 
-// Free, no-key Open-Meteo models. All independently run global/regional forecast models.
-const MODELS = [
-  {key:'ecmwf_ifs025', name:'ECMWF', color:'#4da3ff'},
-  {key:'gfs_seamless', name:'GFS (NOAA)', color:'#f5b942'},
-  {key:'icon_seamless', name:'ICON (DWD)', color:'#2ecc71'},
-  {key:'meteofrance_seamless', name:'Météo-France', color:'#c07bff'},
-  {key:'gem_seamless', name:'GEM (Canada)', color:'#ff9f4d'},
-  {key:'jma_seamless', name:'JMA (Japan)', color:'#4dd0e1'},
+// Two independently run, keyed forecast providers.
+const PROVIDERS = [
+  {key:'owm', name:'OpenWeatherMap', color:'#4da3ff'},
+  {key:'wapi', name:'WeatherAPI.com', color:'#2ecc71'},
 ];
-const MODEL_QUERY = MODELS.map(m=>m.key).join(',');
 
 function median(arr){
   const a = arr.filter(v => v !== null && v !== undefined && !isNaN(v)).sort((x,y)=>x-y);
@@ -241,11 +236,9 @@ function stddev(arr){
   return Math.sqrt(a.reduce((s,v)=>s+(v-m)**2,0)/a.length);
 }
 
-// Precipitation "probability" from Open-Meteo isn't meaningfully defined per named
-// deterministic model (it's really an ensemble statistic), so instead of trusting that
-// field we compute our own honest metric: what % of the 6 models forecast measurable
-// rain (>0.1mm) at this hour. This is derived from real forecast amounts, not a
-// borrowed number that doesn't apply to single-model runs.
+// Rather than trusting either provider's own "chance of rain" field (defined
+// differently by each), we compute our own honest metric: what % of the providers
+// forecast measurable rain (>0.1mm) at this hour, from their real forecast amounts.
 function precipAgreementPct(values){
   const valid = values.filter(v => v !== null && v !== undefined && !isNaN(v));
   if(!valid.length) return null;
@@ -257,7 +250,7 @@ function precipAgreementPct(values){
 // so the person can see exactly how split (or unanimous) the models actually are.
 function computeAgreement(precip, hourIdx){
   if(hourIdx < 0) return {pct:null, count:0, total:0, names:[]};
-  const infos = MODELS.map(m => ({name:m.name, val: precip[m.key][hourIdx]}))
+  const infos = PROVIDERS.map(m => ({name:m.name, val: precip[m.key][hourIdx]}))
     .filter(o => o.val !== null && o.val !== undefined && !isNaN(o.val));
   if(!infos.length) return {pct:null, count:0, total:0, names:[]};
   const raining = infos.filter(o => o.val > 0.1);
@@ -279,36 +272,167 @@ function offsetPoints(lat, lon, km=5){
   };
 }
 
-async function fetchMultiModel(lat, lon){
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&hourly=temperature_2m,precipitation,wind_speed_10m,wind_direction_10m,cloud_cover,apparent_temperature,relative_humidity_2m,pressure_msl,uv_index` +
-    `&daily=sunrise,sunset` +
-    `&models=${MODEL_QUERY}&timezone=auto&forecast_days=2`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('Weather API error ' + res.status);
-  return res.json();
+// --- Provider API keys. Defaults are the launch keys; the admin panel (admin.html)
+// can override either one later (stored in this browser's localStorage) without
+// touching this file. ---
+const DEFAULT_API_KEYS = {
+  owm: '3f6499c1073e6554d41b995facf9741b',
+  weatherapi: '16dbd0fef6d0408885d30629262609'
+};
+function getApiKey(provider){
+  try{
+    const stored = JSON.parse(localStorage.getItem('skypulse_apiKeys') || 'null');
+    if(stored && stored[provider]) return stored[provider];
+  }catch(e){}
+  return DEFAULT_API_KEYS[provider];
 }
 
-// Lightweight 5-day overview from Open-Meteo's default blended model — kept separate
-// from the 6-model multi-fetch above so that call doesn't balloon in size/cost.
-async function fetchFiveDayOverview(lat, lon){
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code` +
-    `&timezone=auto&forecast_days=5`;
+async function fetchOWM(lat, lon){
+  const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=metric&appid=${getApiKey('owm')}`;
   const res = await fetch(url);
-  if(!res.ok) throw new Error('5-day forecast unavailable');
+  if(!res.ok) throw new Error('OpenWeatherMap error ' + res.status);
   return res.json();
 }
-
-// Open-Meteo's separate free Air Quality API (no key). Converts PM2.5 to the standard
-// US EPA AQI scale using the official breakpoint table — a real, documented formula,
-// not an invented number.
-async function fetchAirQuality(lat, lon){
-  const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}` +
-    `&hourly=pm2_5&timezone=auto`;
+async function fetchOWMAirPollution(lat, lon){
+  const url = `https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${getApiKey('owm')}`;
   const res = await fetch(url);
   if(!res.ok) throw new Error('Air quality unavailable');
   return res.json();
+}
+async function fetchWeatherAPI(lat, lon, days=2){
+  const url = `https://api.weatherapi.com/v1/forecast.json?key=${getApiKey('weatherapi')}&q=${lat},${lon}&days=${days}&aqi=no&alerts=no`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('WeatherAPI.com error ' + res.status);
+  return res.json();
+}
+
+// Astro times come back as e.g. "05:47 AM" — anchor them to the forecast day's
+// calendar date and hand back an ISO string so the rest of the app (which expects
+// `new Date(...)`-able sunrise/sunset values) doesn't need to know the source format.
+function parseAstroTime(dateStr, timeStr){
+  const m = /(\d+):(\d+)\s?(AM|PM)/i.exec(timeStr || '');
+  if(!m) return null;
+  let hh = parseInt(m[1], 10), mm = parseInt(m[2], 10);
+  if(/pm/i.test(m[3]) && hh !== 12) hh += 12;
+  if(/am/i.test(m[3]) && hh === 12) hh = 0;
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setHours(hh, mm, 0, 0);
+  return d.toISOString();
+}
+function buildDailyFromWapi(wapiJson){
+  const days = wapiJson.forecast?.forecastday || [];
+  if(!days.length) return null;
+  const time = [], sunrise = [], sunset = [];
+  days.forEach(d => {
+    time.push(d.date);
+    sunrise.push(parseAstroTime(d.date, d.astro?.sunrise));
+    sunset.push(parseAstroTime(d.date, d.astro?.sunset));
+  });
+  return {time, sunrise, sunset};
+}
+
+// Combines the two providers onto one shared hourly timeline. WeatherAPI.com gives
+// true hourly steps, so that's used as the base grid; OpenWeatherMap's 3-hour steps
+// are snapped to whichever hour they're closest to (its own docs describe this as
+// the intended way to read the 5-day/3-hour feed at finer-than-3-hour resolution).
+async function fetchProviders(lat, lon){
+  const [owmJson, wapiJson] = await Promise.all([fetchOWM(lat, lon), fetchWeatherAPI(lat, lon)]);
+
+  const wapiHours = [];
+  (wapiJson.forecast?.forecastday || []).forEach(day => wapiHours.push(...(day.hour || [])));
+  const now = new Date();
+  const windowHours = wapiHours
+    .filter(h => new Date(h.time.replace(' ', 'T')) > new Date(now.getTime() - 60*60*1000))
+    .slice(0, 48);
+
+  const owmList = owmJson.list || [];
+  const owmTimes = owmList.map(e => new Date(e.dt * 1000));
+  function nearestOwm(t){
+    let best = null, bestDiff = Infinity;
+    owmList.forEach((e, i) => {
+      const diff = Math.abs(owmTimes[i] - t);
+      if(diff < bestDiff){ bestDiff = diff; best = e; }
+    });
+    return best;
+  }
+
+  const time=[], t_owm=[], t_wapi=[], p_owm=[], p_wapi=[], w_owm=[], w_wapi=[],
+        wd_owm=[], wd_wapi=[], c_owm=[], c_wapi=[], h_owm=[], h_wapi=[],
+        pr_owm=[], pr_wapi=[], f_owm=[], f_wapi=[], uv_owm=[], uv_wapi=[];
+
+  windowHours.forEach(h => {
+    const t = new Date(h.time.replace(' ', 'T'));
+    time.push(t.toISOString());
+    const o = nearestOwm(t);
+    t_owm.push(o ? o.main.temp : null);
+    // OWM's rain['3h'] is accumulated over 3 hours; divide down to an hourly rate
+    // so it's comparable to WeatherAPI's per-hour precip_mm.
+    p_owm.push(o ? (o.rain && o.rain['3h'] !== undefined ? o.rain['3h']/3 : 0) : null);
+    w_owm.push(o ? o.wind.speed*3.6 : null); // m/s -> km/h
+    wd_owm.push(o ? o.wind.deg : null);
+    c_owm.push(o ? o.clouds.all : null);
+    h_owm.push(o ? o.main.humidity : null);
+    pr_owm.push(o ? o.main.pressure : null);
+    f_owm.push(o ? o.main.feels_like : null);
+    uv_owm.push(null); // not on this OWM plan — WeatherAPI supplies UV instead
+
+    t_wapi.push(h.temp_c);
+    p_wapi.push(h.precip_mm ?? 0);
+    w_wapi.push(h.wind_kph);
+    wd_wapi.push(h.wind_degree);
+    c_wapi.push(h.cloud);
+    h_wapi.push(h.humidity);
+    pr_wapi.push(h.pressure_mb);
+    f_wapi.push(h.feelslike_c);
+    uv_wapi.push(h.uv ?? null);
+  });
+
+  return {
+    hourly: {
+      time,
+      temperature_2m_owm:t_owm, temperature_2m_wapi:t_wapi,
+      precipitation_owm:p_owm, precipitation_wapi:p_wapi,
+      wind_speed_10m_owm:w_owm, wind_speed_10m_wapi:w_wapi,
+      wind_direction_10m_owm:wd_owm, wind_direction_10m_wapi:wd_wapi,
+      cloud_cover_owm:c_owm, cloud_cover_wapi:c_wapi,
+      relative_humidity_2m_owm:h_owm, relative_humidity_2m_wapi:h_wapi,
+      pressure_msl_owm:pr_owm, pressure_msl_wapi:pr_wapi,
+      apparent_temperature_owm:f_owm, apparent_temperature_wapi:f_wapi,
+      uv_index_owm:uv_owm, uv_index_wapi:uv_wapi,
+    },
+    daily: buildDailyFromWapi(wapiJson)
+  };
+}
+
+// 5-day outlook: grouped from OpenWeatherMap's 5-day/3-hour feed (its native use case),
+// kept as a separate call so it doesn't bloat the main hourly fetch above.
+async function fetchFiveDayOverview(lat, lon){
+  const json = await fetchOWM(lat, lon);
+  const byDay = {};
+  (json.list || []).forEach(entry => {
+    const day = entry.dt_txt.slice(0, 10);
+    (byDay[day] = byDay[day] || []).push(entry);
+  });
+  const days = Object.keys(byDay).sort().slice(0, 5);
+  const time=[], tmax=[], tmin=[], popMax=[];
+  days.forEach(day => {
+    const entries = byDay[day];
+    time.push(day);
+    tmax.push(Math.max(...entries.map(e => e.main.temp)));
+    tmin.push(Math.min(...entries.map(e => e.main.temp)));
+    popMax.push(Math.max(...entries.map(e => Math.round((e.pop||0)*100))));
+  });
+  return {daily: {time, temperature_2m_max:tmax, temperature_2m_min:tmin, precipitation_probability_max:popMax}};
+}
+
+// Air quality via OpenWeatherMap's Air Pollution API. Still runs PM2.5 through the
+// same documented US EPA breakpoint table below, rather than OWM's own coarse 1-5 index.
+async function fetchAirQuality(lat, lon){
+  const json = await fetchOWMAirPollution(lat, lon);
+  const entry = json.list && json.list[0];
+  const pm = entry ? entry.main.components.pm2_5 : null;
+  const dt = entry ? entry.dt*1000 : Date.now();
+  return {hourly: {time:[new Date(dt).toISOString()], pm2_5:[pm]}};
 }
 
 function pm25ToAQI(pm){
@@ -332,26 +456,24 @@ function aqiCategory(aqi){
   if(aqi <= 300) return {label:'Very Unhealthy', color:'#c05ce0'};
   return {label:'Hazardous', color:'#8b1a3d'};
 }
+// Lightweight single-provider lookup for the trip planner and micro-grid, where full
+// multi-provider consensus isn't needed — just a fast, real per-point forecast.
 async function fetchSimple(lat, lon){
-  // Uses Open-Meteo's default blended "best_match" model (no models= param), where
-  // precipitation_probability is a genuinely valid ensemble-derived statistic —
-  // unlike when it's requested per named deterministic model (see fetchMultiModel).
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&hourly=temperature_2m,precipitation_probability,cloud_cover&timezone=auto&forecast_days=1`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('Weather API error ' + res.status);
-  return res.json();
-}
-async function getIpLocation(){
-  const res = await fetch('https://ipapi.co/json/');
-  if(!res.ok) throw new Error('IP location lookup failed');
-  const j = await res.json();
-  if(!j.latitude || !j.longitude) throw new Error('IP location returned no coordinates');
-  return {lat: j.latitude, lon: j.longitude, label: `${j.city || ''} ${j.region || ''}`.trim() || 'Approximate (IP-based)'};
+  const json = await fetchWeatherAPI(lat, lon, 1);
+  const hours = [];
+  (json.forecast?.forecastday || []).forEach(d => hours.push(...(d.hour || [])));
+  return {
+    hourly: {
+      time: hours.map(h => h.time.replace(' ', 'T')),
+      temperature_2m: hours.map(h => h.temp_c),
+      precipitation_probability: hours.map(h => h.chance_of_rain),
+      cloud_cover: hours.map(h => h.cloud)
+    }
+  };
 }
 async function geocodeCity(name){
   // Nominatim (OpenStreetMap) has far better coverage of small localities/barangays
-  // than the basic Open-Meteo geocoder.
+  // than either weather provider's basic geocoder.
   const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(name)}&limit=1&addressdetails=1`;
   const res = await fetch(url, {headers:{'Accept':'application/json'}});
   const j = await res.json();
@@ -383,81 +505,53 @@ function currentHourIndex(times){
 
 function modelSeries(hourly, field){
   const out = {};
-  MODELS.forEach(m => { out[m.key] = hourly[`${field}_${m.key}`]; });
+  PROVIDERS.forEach(m => { out[m.key] = hourly[`${field}_${m.key}`]; });
   return out;
 }
 
-async function fetchFineResolution(lat, lon){
-  // minutely_15 is Open-Meteo's highest-resolution free feed (best-match single blended
-  // model, not raw multi-model). We combine it with the hourly multi-model median below
-  // so the result reflects several models, not just one.
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&minutely_15=temperature_2m,precipitation,cloud_cover&timezone=auto&forecast_days=2`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('High-resolution nowcast unavailable for this location');
-  return res.json();
-}
+// Neither free-tier provider offers a true sub-hourly feed, so instead of pretending
+// to have one, this builds honest 15-minute steps by interpolating between consecutive
+// hourly consensus values (median across both providers) for the "next hours" view.
+function buildFineNowcast(hourlyProviders, startIdx){
+  const times = hourlyProviders.time;
+  const temps = modelSeries(hourlyProviders, 'temperature_2m');
+  const precip = modelSeries(hourlyProviders, 'precipitation');
+  const clouds = modelSeries(hourlyProviders, 'cloud_cover');
 
-// Blends the 15-min high-resolution feed with the multi-model hourly median so the
-// near-term chart is both fine-grained AND reflects several independent models.
-function buildFineNowcast(fineData, hourlyMultiModel, startIdx){
-  const times = hourlyMultiModel.time;
-  const temps = modelSeries(hourlyMultiModel, 'temperature_2m');
-  const precip = modelSeries(hourlyMultiModel, 'precipitation');
-  const clouds = modelSeries(hourlyMultiModel, 'cloud_cover');
-
-  const fTimes = fineData.minutely_15.time;
-  const fTemps = fineData.minutely_15.temperature_2m;
-  const fPrecip = fineData.minutely_15.precipitation;
-  const fClouds = fineData.minutely_15.cloud_cover;
+  const hourlyTemp = times.map((_, i) => median(PROVIDERS.map(m => temps[m.key][i])));
+  const hourlyCloud = times.map((_, i) => median(PROVIDERS.map(m => clouds[m.key][i])));
+  const hourlyPrecip = times.map((_, i) => median(PROVIDERS.map(m => precip[m.key][i])));
 
   const now = new Date();
   const windowEnd = new Date(now.getTime() + 5*60*60*1000);
-
   const points = [];
-  for(let i=0; i<fTimes.length; i++){
-    const t = new Date(fTimes[i]);
-    // Each point represents a 15-minute window starting at t. Previously this
-    // dropped any window that had *started* before now, so at e.g. 4:52 the
-    // in-progress 4:45-5:00 window was skipped and the list started at 5:00 —
-    // right now was missing. Keep it as long as the window hasn't fully ended yet.
-    const windowFinish = new Date(t.getTime() + 15*60*1000);
-    if(windowFinish <= now || t > windowEnd) continue;
 
-    // find the enclosing hour in the multi-model series to pull its median
-    let hourIdx = -1, bestDiff = Infinity;
-    for(let j=startIdx; j<times.length; j++){
-      const diff = Math.abs(new Date(times[j]) - t);
-      if(diff < bestDiff){ bestDiff = diff; hourIdx = j; }
+  for(let i = startIdx; i < times.length - 1; i++){
+    const t0 = new Date(times[i]);
+    if(t0 > windowEnd) break;
+    for(let step = 0; step < 4; step++){
+      const t = new Date(t0.getTime() + step*15*60*1000);
+      if(t > windowEnd) break;
+      const windowFinish = new Date(t.getTime() + 15*60*1000);
+      if(windowFinish <= now) continue;
+      const frac = step/4;
+      const a = hourlyTemp[i], b = hourlyTemp[i+1];
+      const temp = (a !== null && b !== null) ? a + (b-a)*frac : a;
+      const ca = hourlyCloud[i], cb = hourlyCloud[i+1];
+      const cloud = (ca !== null && cb !== null) ? ca + (cb-ca)*frac : ca;
+      points.push({
+        time: t.toISOString(),
+        temp, cloud,
+        agreement: computeAgreement(precip, i),
+        precipMm: (hourlyPrecip[i] ?? 0) / 4
+      });
     }
-    const hourlyMedianTemp = hourIdx >= 0 ? median(MODELS.map(m => temps[m.key][hourIdx])) : fTemps[i];
-    const hourlyMedianCloud = hourIdx >= 0 ? median(MODELS.map(m => clouds[m.key][hourIdx])) : null;
-    const agreement = computeAgreement(precip, hourIdx);
-
-    const blendedTemp = fTemps[i] !== null && hourlyMedianTemp !== null
-      ? (fTemps[i]*0.6 + hourlyMedianTemp*0.4)
-      : (fTemps[i] ?? hourlyMedianTemp);
-
-    // Same idea as temperature: the 15-min feed updates more often and reflects
-    // near-term conditions better than a single hourly model consensus that can sit
-    // unchanged for hours. Lean on it more heavily for "right now" accuracy.
-    const fCloudVal = fClouds ? fClouds[i] : null;
-    const blendedCloud = fCloudVal !== null && fCloudVal !== undefined && hourlyMedianCloud !== null
-      ? (fCloudVal*0.7 + hourlyMedianCloud*0.3)
-      : (fCloudVal ?? hourlyMedianCloud);
-
-    points.push({
-      time: fTimes[i],
-      temp: blendedTemp,
-      cloud: blendedCloud,
-      agreement,
-      precipMm: fPrecip[i] ?? 0
-    });
   }
   return points;
 }
 
-// Populated per-location from Open-Meteo's daily sunrise/sunset — real astronomical
+
+// Populated per-location from WeatherAPI's daily astro sunrise/sunset — real astronomical
 // times, not a guessed 6am-6pm window. Falls back to the guess only if unavailable.
 let SUN_TIMES = [];
 
@@ -991,8 +1085,8 @@ function simpleCondition(rainProb, cloudPct, isDay){
 
 function useMyLocation(){
   if(!navigator.geolocation){
-    statusEl.innerHTML = 'Geolocation is not supported by this browser — falling back to network-based location…';
-    fallbackToIpLocation();
+    statusEl.style.display = 'block';
+    statusEl.innerHTML = `<span class="err">Geolocation isn't supported by this browser.</span> Please search for a place or click your spot on the map below instead.`;
     return;
   }
   statusEl.style.display = 'block';
@@ -1008,10 +1102,9 @@ function useMyLocation(){
       // High-accuracy GPS often times out on desktops/laptops with no GPS chip
       // (it waits on a hardware fix that never comes), even though the browser
       // can usually resolve a decent Wi-Fi/cell-based position quickly with
-      // high accuracy turned off. Retrying that way before falling all the way
-      // back to coarse IP location means "Use my location" lands on your actual
-      // current spot far more often, instead of repeatedly landing on the same
-      // network-level point and getting flagged as an already-saved duplicate.
+      // high accuracy turned off. Retrying that way before giving up entirely
+      // means "Use my location" lands on your actual current spot far more
+      // often, instead of failing outright on the first timeout.
       if(err.code === err.TIMEOUT){
         statusEl.textContent = 'Precise GPS timed out — trying a quicker, lower-accuracy fix…';
         navigator.geolocation.getCurrentPosition(
@@ -1022,8 +1115,8 @@ function useMyLocation(){
           },
           err2 => {
             console.warn('Browser geolocation (low accuracy) failed:', err2.message);
-            statusEl.textContent = 'Still could not get GPS — trying network-based location instead…';
-            fallbackToIpLocation();
+            statusEl.style.display = 'block';
+            statusEl.innerHTML = `<span class="err">Could not detect your location.</span> Please search for a place or click your exact spot on the map below instead — that always works regardless of GPS.`;
           },
           {enableHighAccuracy:false, timeout:8000, maximumAge:60000}
         );
@@ -1034,21 +1127,11 @@ function useMyLocation(){
       if(isFileProtocol) reason = 'GPS is blocked on local files (browser rule)';
       else if(err.code === err.PERMISSION_DENIED) reason = 'location permission was denied';
       else reason = err.message;
-      statusEl.textContent = `${reason}. Trying network-based location instead…`;
-      fallbackToIpLocation();
+      statusEl.style.display = 'block';
+      statusEl.innerHTML = `<span class="err">${escapeHtml(reason)}.</span> Please search for a place or click your exact spot on the map below instead.`;
     },
     {enableHighAccuracy:true, timeout:12000, maximumAge:0}
   );
-}
-
-function fallbackToIpLocation(){
-  getIpLocation().then(loc=>{
-    statusEl.textContent = `Using approximate location: ${loc.label} (network-based, not exact GPS). Fetching forecasts…`;
-    if(map) map.setView([loc.lat, loc.lon], 12);
-    runForLocation(loc.lat, loc.lon, loc.label);
-  }).catch(()=>{
-    statusEl.innerHTML = `<span class="err">Could not detect your location automatically — your network may be blocking these lookups.</span> Please click your exact spot on the map below instead, that always works regardless of network restrictions.`;
-  });
 }
 
 function useManualCoords(){
@@ -1302,8 +1385,6 @@ function initFrontMap(){
   map = L.map('map', {zoomControl:true}).setView([12.8797, 121.7740], 6);
   tryTileProvider(0);
   map.on('click', onMapClick);
-  // Soft, non-blocking attempt to center the map near the user via IP — no permission needed.
-  getIpLocation().then(loc => map.setView([loc.lat, loc.lon], 11)).catch(()=>{});
 }
 
 async function onMapClick(e){
@@ -1591,7 +1672,7 @@ async function runForLocation(lat, lon, label){
   CURRENT = {lat, lon, label};
   showLoadingSkeleton();
   try{
-    const data = await fetchMultiModel(lat, lon);
+    const data = await fetchProviders(lat, lon);
     const hourly = data.hourly;
     if(data.daily && data.daily.sunrise && data.daily.sunset){
       SUN_TIMES = data.daily.time.map((t, i) => ({
@@ -1613,15 +1694,15 @@ async function runForLocation(lat, lon, label){
     const pressureSeries = modelSeries(hourly, 'pressure_msl');
     const uvSeries = modelSeries(hourly, 'uv_index');
 
-    const curTemps = MODELS.map(m => temps[m.key][startIdx]);
-    const curPrecip = MODELS.map(m => precip[m.key][startIdx]);
-    const curWinds = MODELS.map(m => winds[m.key][startIdx]);
-    const curClouds = MODELS.map(m => clouds[m.key][startIdx]);
-    const curFeels = MODELS.map(m => feelsLikeSeries[m.key][startIdx]);
-    const curHumidity = MODELS.map(m => humiditySeries[m.key][startIdx]);
-    const curWindDir = MODELS.map(m => windDirSeries[m.key][startIdx]);
-    const curPressure = MODELS.map(m => pressureSeries[m.key][startIdx]);
-    const curUV = MODELS.map(m => uvSeries[m.key][startIdx]);
+    const curTemps = PROVIDERS.map(m => temps[m.key][startIdx]);
+    const curPrecip = PROVIDERS.map(m => precip[m.key][startIdx]);
+    const curWinds = PROVIDERS.map(m => winds[m.key][startIdx]);
+    const curClouds = PROVIDERS.map(m => clouds[m.key][startIdx]);
+    const curFeels = PROVIDERS.map(m => feelsLikeSeries[m.key][startIdx]);
+    const curHumidity = PROVIDERS.map(m => humiditySeries[m.key][startIdx]);
+    const curWindDir = PROVIDERS.map(m => windDirSeries[m.key][startIdx]);
+    const curPressure = PROVIDERS.map(m => pressureSeries[m.key][startIdx]);
+    const curUV = PROVIDERS.map(m => uvSeries[m.key][startIdx]);
 
     const consensusTemp = median(curTemps);
     const consensusRain = precipAgreementPct(curPrecip);
@@ -1695,17 +1776,17 @@ async function runForLocation(lat, lon, label){
     loadFiveDay(lat, lon);
 
     document.getElementById('modelLegend').innerHTML =
-      `Models in this forecast: <b>${MODELS.map(m=>m.name).join(', ')}</b> — temperature/wind/cloud consensus is the median across all of them. Rain chance = % of these models forecasting measurable rain (not a borrowed probability field, since that's not reliably defined per individual model).`;
+      `Providers in this forecast: <b>${PROVIDERS.map(m=>m.name).join(', ')}</b> — temperature/wind/cloud consensus is the median across both. Rain chance = % of these providers forecasting measurable rain (not a borrowed probability field from either source).`;
 
     const confBadge = document.getElementById('confBadge');
     if(spread < 1.5){ confBadge.className = 'badge high'; confBadge.textContent = 'High Confidence'; }
-    else if(spread > 3.5){ confBadge.className = 'badge low'; confBadge.textContent = 'Model Divergence'; }
+    else if(spread > 3.5){ confBadge.className = 'badge low'; confBadge.textContent = 'Provider Divergence'; }
     else { confBadge.className = 'badge mid'; confBadge.textContent = 'Moderate Confidence'; }
 
     // Model consensus is represented by the redesigned forecast chart and
     // weather-intelligence sections below. Keep the rain-model calculation here
     // for the chart/insight logic, but do not write to legacy UI containers.
-    const rainingModels = MODELS.map((m,i) => ({m, raining: curPrecip[i] !== null && curPrecip[i] !== undefined && curPrecip[i] > 0.1}));
+    const rainingModels = PROVIDERS.map((m,i) => ({m, raining: curPrecip[i] !== null && curPrecip[i] !== undefined && curPrecip[i] > 0.1}));
     const rainCount = rainingModels.filter(r=>r.raining).length;
 
     // Weather Intelligence — plain-language takeaways from the real data above
@@ -1718,7 +1799,7 @@ async function runForLocation(lat, lon, label){
       insights.push({icon:'🌤️', text:'Low rain signal right now — good conditions for being outdoors.'});
     }
     if(spread >= 3.5){
-      insights.push({icon:'⚠️', text:`Forecast confidence is low right now — the 6 models disagree on temperature by ${spread.toFixed(1)}°, so treat details loosely.`});
+      insights.push({icon:'⚠️', text:`Forecast confidence is low right now — providers disagree on temperature by ${spread.toFixed(1)}°, so treat details loosely.`});
     } else if(spread < 1.5){
       insights.push({icon:'✅', text:'Models are in close agreement right now — this forecast is fairly reliable.'});
     }
@@ -1730,7 +1811,7 @@ async function runForLocation(lat, lon, label){
     // Check if rain risk climbs later in the day (next 6 hours) for a "rain risk increases after X" style note
     const laterIdx = Math.min(startIdx + 6, hourly.time.length - 1);
     if(laterIdx > startIdx){
-      const laterRain = precipAgreementPct(MODELS.map(m => precip[m.key][laterIdx]));
+      const laterRain = precipAgreementPct(PROVIDERS.map(m => precip[m.key][laterIdx]));
       if(laterRain !== null && consensusRain !== null && laterRain - consensusRain >= 25){
         insights.push({icon:'📈', text:`Rain risk increases later — model agreement climbs to ${laterRain}% around ${fmtHour(hourly.time[laterIdx])}.`});
       }
@@ -1739,8 +1820,7 @@ async function runForLocation(lat, lon, label){
       <div class="insight-item"><span class="ii-icon">${i.icon}</span><span class="ii-text">${i.text}</span></div>
     `).join('');
 
-    const fineData = await fetchFineResolution(lat, lon);
-    const finePoints = buildFineNowcast(fineData, hourly, startIdx);
+    const finePoints = buildFineNowcast(hourly, startIdx);
     lastFinePoints = finePoints;
     activeMinuteHourKey = null;
     renderMinuteList(finePoints);
@@ -1754,20 +1834,20 @@ async function runForLocation(lat, lon, label){
     document.getElementById('tripFrom').placeholder = `Defaults to ${label}`;
 
     const chartLabels = hourly.time.slice(startIdx, startIdx+24).map(fmtHour);
-    const chartDatasets = MODELS.map(m => ({
+    const chartDatasets = PROVIDERS.map(m => ({
       label: m.name,
       data: temps[m.key].slice(startIdx, startIdx+24),
       borderColor: m.color,
       tension:.3, pointRadius:0, borderWidth:1.4
     }));
-    const consensusData = chartLabels.map((_,i) => median(MODELS.map(m => temps[m.key][startIdx+i])));
-    const rainConsensusData = chartLabels.map((_,i) => precipAgreementPct(MODELS.map(m => precip[m.key][startIdx+i])));
-    const cloudConsensusData = chartLabels.map((_,i) => median(MODELS.map(m => clouds[m.key][startIdx+i])));
-    const precipAmtData = chartLabels.map((_,i) => median(MODELS.map(m => precip[m.key][startIdx+i])));
+    const consensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => temps[m.key][startIdx+i])));
+    const rainConsensusData = chartLabels.map((_,i) => precipAgreementPct(PROVIDERS.map(m => precip[m.key][startIdx+i])));
+    const cloudConsensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => clouds[m.key][startIdx+i])));
+    const precipAmtData = chartLabels.map((_,i) => median(PROVIDERS.map(m => precip[m.key][startIdx+i])));
     chartDatasets.push({label:'Consensus', data:consensusData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
 
     // Connected-line hourly strip (temperature line, wind speed per hour, sunset marked)
-    const windData = chartLabels.map((_,i) => median(MODELS.map(m => winds[m.key][startIdx+i])));
+    const windData = chartLabels.map((_,i) => median(PROVIDERS.map(m => winds[m.key][startIdx+i])));
     renderHourStrip(hourly.time.slice(startIdx, startIdx+24), consensusData, windData, rainConsensusData, cloudConsensusData, SUN_TIMES);
 
     if(window.mainChartInstance) window.mainChartInstance.destroy();

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SkyPulse Admin — Settings</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  .admin-shell{max-width:760px;margin:auto;padding:42px 24px 80px}
+  .admin-card{padding:26px;margin-bottom:20px}
+  .admin-card h2{font-family:var(--display);font-size:20px;margin:0 0 6px;letter-spacing:-.02em}
+  .admin-card p.hint{color:var(--muted);font-size:12px;line-height:1.6;margin:0 0 18px}
+  .field-row{margin-bottom:16px}
+  .field-row label{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.1em;margin-bottom:7px;text-transform:uppercase}
+  .field-row input[type="text"],.field-row input[type="password"]{font-family:monospace;font-size:12.5px}
+  .key-row{display:flex;gap:8px;align-items:center}
+  .key-row input{flex:1}
+  .warn-box{display:flex;gap:12px;padding:16px;border-radius:16px;border:1px solid rgba(255,209,102,.22);background:rgba(255,209,102,.06);margin-bottom:22px;font-size:12px;line-height:1.6;color:#dfe9f7}
+  .warn-box .wi{font-size:20px;flex-shrink:0}
+  .qr-drop{border:1px dashed var(--line);border-radius:16px;padding:22px;text-align:center;color:var(--muted);font-size:12px;cursor:pointer;transition:.2s}
+  .qr-drop:hover{border-color:rgba(99,179,255,.4);background:rgba(99,179,255,.04)}
+  .qr-preview{max-width:220px;display:block;margin:16px auto 0;border-radius:14px;border:1px solid var(--line)}
+  .save-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .save-msg{font-size:11.5px;color:var(--good);opacity:0;transition:opacity .3s}
+  .save-msg.show{opacity:1}
+  .back-link{color:var(--accent);font-size:12px;text-decoration:none;display:inline-block;margin-bottom:18px}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html"><span class="brand-mark">✦</span><span><strong>SkyPulse</strong><small>Admin settings</small></span></a>
+  </div>
+</header>
+<main class="admin-shell">
+  <a class="back-link" href="index.html">← Back to the app</a>
+
+  <div class="warn-box">
+    <span class="wi">ⓘ</span>
+    <div>This panel is device-local only — it edits a copy of your keys stored in <b>this browser's</b> localStorage, with no login and no server behind it. It's convenient for quickly swapping a key or checking a QR without touching code, but anyone with access to this browser (or this URL, since nothing here is truly secret) can see and change these values. Don't rely on it as real access control.</div>
+  </div>
+
+  <section class="card-surface admin-card">
+    <h2>Weather provider API keys</h2>
+    <p class="hint">Used for every forecast fetch (OpenWeatherMap for the 5-day outlook + air quality, WeatherAPI.com for the hourly consensus, trip planner and micro-grid). Leave a field blank and save to fall back to the app's built-in default for that provider.</p>
+
+    <div class="field-row">
+      <label>OpenWeatherMap API key</label>
+      <div class="key-row">
+        <input type="password" id="owmKeyInput" placeholder="Paste your OpenWeatherMap key">
+        <button type="button" class="ghost-btn" onclick="toggleReveal('owmKeyInput')">👁</button>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <label>WeatherAPI.com API key</label>
+      <div class="key-row">
+        <input type="password" id="wapiKeyInput" placeholder="Paste your WeatherAPI.com key">
+        <button type="button" class="ghost-btn" onclick="toggleReveal('wapiKeyInput')">👁</button>
+      </div>
+    </div>
+
+    <div class="save-bar">
+      <button type="button" class="primary-btn" onclick="saveKeys()">Save keys</button>
+      <button type="button" class="ghost-btn" onclick="resetKeys()">Reset to defaults</button>
+      <span class="save-msg" id="keySaveMsg">Saved ✓</span>
+    </div>
+  </section>
+
+  <section class="card-surface admin-card">
+    <h2>GCash QR code <span style="color:var(--muted);font-weight:600;font-size:11px;">(for later use)</span></h2>
+    <p class="hint">Upload your GCash QR image here so it's ready once you wire up a donate/support button elsewhere in the app. It's stored only in this browser (not uploaded anywhere) until you build that feature.</p>
+
+    <div class="qr-drop" onclick="document.getElementById('qrFileInput').click()">
+      <div id="qrDropLabel">Click to choose a QR image (PNG/JPG)</div>
+      <input type="file" id="qrFileInput" accept="image/*" style="display:none" onchange="onQrSelected(event)">
+      <img id="qrPreview" class="qr-preview" style="display:none">
+    </div>
+
+    <div class="save-bar" style="margin-top:16px;">
+      <button type="button" class="ghost-btn" id="qrRemoveBtn" style="display:none" onclick="removeQr()">Remove QR</button>
+      <span class="save-msg" id="qrSaveMsg">Saved ✓</span>
+    </div>
+  </section>
+</main>
+<script>
+const KEYS_STORAGE = 'skypulse_apiKeys';
+const QR_STORAGE = 'skypulse_gcashQr';
+
+function loadStoredKeys(){
+  try{ return JSON.parse(localStorage.getItem(KEYS_STORAGE) || 'null') || {}; }catch(e){ return {}; }
+}
+function initKeyFields(){
+  const stored = loadStoredKeys();
+  document.getElementById('owmKeyInput').value = stored.owm || '';
+  document.getElementById('wapiKeyInput').value = stored.weatherapi || '';
+}
+function toggleReveal(id){
+  const el = document.getElementById(id);
+  el.type = el.type === 'password' ? 'text' : 'password';
+}
+function flashSaved(id){
+  const el = document.getElementById(id);
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 1800);
+}
+function saveKeys(){
+  const owm = document.getElementById('owmKeyInput').value.trim();
+  const weatherapi = document.getElementById('wapiKeyInput').value.trim();
+  const toSave = {};
+  if(owm) toSave.owm = owm;
+  if(weatherapi) toSave.weatherapi = weatherapi;
+  try{
+    localStorage.setItem(KEYS_STORAGE, JSON.stringify(toSave));
+    flashSaved('keySaveMsg');
+  }catch(e){
+    alert('Could not save keys to this browser (storage may be full or blocked).');
+  }
+}
+function resetKeys(){
+  try{ localStorage.removeItem(KEYS_STORAGE); }catch(e){}
+  document.getElementById('owmKeyInput').value = '';
+  document.getElementById('wapiKeyInput').value = '';
+  flashSaved('keySaveMsg');
+}
+
+function initQrPreview(){
+  let stored = null;
+  try{ stored = localStorage.getItem(QR_STORAGE); }catch(e){}
+  if(stored){
+    document.getElementById('qrPreview').src = stored;
+    document.getElementById('qrPreview').style.display = 'block';
+    document.getElementById('qrDropLabel').textContent = 'Click to replace the QR image';
+    document.getElementById('qrRemoveBtn').style.display = 'inline-flex';
+  }
+}
+function onQrSelected(evt){
+  const file = evt.target.files && evt.target.files[0];
+  if(!file) return;
+  if(!file.type.startsWith('image/')){
+    alert('Please choose an image file.');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      localStorage.setItem(QR_STORAGE, reader.result);
+      document.getElementById('qrPreview').src = reader.result;
+      document.getElementById('qrPreview').style.display = 'block';
+      document.getElementById('qrDropLabel').textContent = 'Click to replace the QR image';
+      document.getElementById('qrRemoveBtn').style.display = 'inline-flex';
+      flashSaved('qrSaveMsg');
+    }catch(e){
+      alert('Could not save this image — it may be too large for browser storage. Try a smaller image.');
+    }
+  };
+  reader.readAsDataURL(file);
+}
+function removeQr(){
+  try{ localStorage.removeItem(QR_STORAGE); }catch(e){}
+  document.getElementById('qrPreview').style.display = 'none';
+  document.getElementById('qrPreview').src = '';
+  document.getElementById('qrDropLabel').textContent = 'Click to choose a QR image (PNG/JPG)';
+  document.getElementById('qrRemoveBtn').style.display = 'none';
+  document.getElementById('qrFileInput').value = '';
+}
+
+initKeyFields();
+initQrPreview();
+</script>
+</body></html>

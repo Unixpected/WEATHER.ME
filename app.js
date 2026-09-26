@@ -646,6 +646,53 @@ function buildFineNowcast(hourlyProviders, startIdx){
   return points;
 }
 
+// Same 15-minute interpolation idea as buildFineNowcast, but kept per-provider instead
+// of collapsed to a consensus — this is what feeds the "chance of rain, per provider"
+// chart. Each provider's own rain% is its real published probability where it has one,
+// else a plain 0/100 read of whether its own forecast amount crosses the trace
+// threshold (a lone provider has nothing to "agree" with, so no vote makes sense here).
+function buildFineRainByProvider(hourlyProviders, startIdx){
+  const times = hourlyProviders.time;
+  const precip = modelSeries(hourlyProviders, 'precipitation');
+  const precipProb = modelSeries(hourlyProviders, 'precip_probability');
+
+  const hourlyPct = {};
+  PROVIDERS.forEach(p => {
+    hourlyPct[p.key] = times.map((_, i) => {
+      const prob = precipProb[p.key][i];
+      if(prob !== null && prob !== undefined && !isNaN(prob)) return prob;
+      const mm = precip[p.key][i];
+      if(mm === null || mm === undefined || isNaN(mm)) return null;
+      return mm > RAIN_TRACE_THRESHOLD_MM ? 100 : 0;
+    });
+  });
+
+  const now = new Date();
+  const windowEnd = new Date(now.getTime() + 5*60*60*1000);
+  const labels = [];
+  const series = {};
+  PROVIDERS.forEach(p => { series[p.key] = []; });
+
+  for(let i = startIdx; i < times.length - 1; i++){
+    const t0 = new Date(times[i]);
+    if(t0 > windowEnd) break;
+    for(let step = 0; step < 4; step++){
+      const t = new Date(t0.getTime() + step*15*60*1000);
+      if(t > windowEnd) break;
+      const windowFinish = new Date(t.getTime() + 15*60*1000);
+      if(windowFinish <= now) continue;
+      const frac = step/4;
+      labels.push(t.toISOString());
+      PROVIDERS.forEach(p => {
+        const a = hourlyPct[p.key][i], b = hourlyPct[p.key][i+1];
+        const val = (a !== null && b !== null) ? a + (b-a)*frac : a;
+        series[p.key].push(val);
+      });
+    }
+  }
+  return {labels, series};
+}
+
 
 // Populated per-location from WeatherAPI's daily astro sunrise/sunset — real astronomical
 // times, not a guessed 6am-6pm window. Falls back to the guess only if unavailable.
@@ -1977,6 +2024,49 @@ async function runForLocation(lat, lon, label){
     document.getElementById('chartLegend').innerHTML = chartDatasets.map(d =>
       `<span><span class="dot" style="background:${d.borderColor}"></span>${d.label}</span>`
     ).join('');
+
+    // Second chart: each provider's own rain chance at 15-minute resolution (interpolated
+    // from their hourly values — see buildFineRainByProvider), so you can see exactly which
+    // source is driving the consensus number instead of only the blended white line.
+    const fineRain = buildFineRainByProvider(hourly, startIdx);
+    const rainLabels = fineRain.labels.map(t => new Date(t).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}));
+    const rainDatasets = PROVIDERS.map(m => ({
+      label: m.name,
+      data: fineRain.series[m.key],
+      borderColor: m.color,
+      tension:.3, pointRadius:0, borderWidth:1.4
+    }));
+    const rainConsensusFine = fineRain.labels.map((_,i) => median(PROVIDERS.map(m => fineRain.series[m.key][i])));
+    rainDatasets.push({label:'Consensus', data:rainConsensusFine, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
+
+    if(window.rainChartInstance) window.rainChartInstance.destroy();
+    window.rainChartInstance = new Chart(document.getElementById('rainChart'), {
+      type: 'line',
+      data: { labels: rainLabels, datasets: rainDatasets },
+      options: {
+        animation:false,
+        interaction:{mode:'index', intersect:false},
+        plugins:{
+          legend:{display:false},
+          tooltip:{
+            backgroundColor: isLight ? '#ffffff' : '#131d33',
+            titleColor: isLight ? '#101828' : '#eef2fb',
+            bodyColor: isLight ? '#101828' : '#eef2fb',
+            borderColor: gridColor, borderWidth:1, padding:10, cornerRadius:8,
+            callbacks:{ label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y === null ? '—' : ctx.parsed.y.toFixed(0)+'%'}` }
+          }
+        },
+        scales:{
+          x:{ticks:{color:tickColor, maxTicksLimit:8}, grid:{color:gridColor}},
+          y:{min:0, max:100, ticks:{color:tickColor, callback:(v)=>v+'%'}, grid:{color:gridColor}}
+        }
+      }
+    });
+    document.getElementById('rainChartLegend').innerHTML = rainDatasets.map(d =>
+      `<span><span class="dot" style="background:${d.borderColor}"></span>${d.label}</span>`
+    ).join('');
+    document.getElementById('rainChartNote').innerHTML =
+      `Each line is that provider's own rain chance, interpolated to 15-minute steps from its hourly forecast — not a real minutely feed, since none of these providers publish one on their free plans. Providers that don't publish a probability field (Meteosource) show a flat 0%/100% read of whether their own forecast amount crosses ${RAIN_TRACE_THRESHOLD_MM}mm.`;
 
     statusEl.style.display = 'none';
     document.getElementById('app').style.display = 'block';

@@ -919,15 +919,25 @@ function conditionLabel(mmPerHour, cloudPct, agreementPct, isDay){
     if(rainName === 'Heavy Rain') return {text:rainName, icon:'⛈️'};
     if(rainName === 'Moderate Rain') return {text:rainName, icon:'🌧️'};
     const lightIcon = isDay ? '🌦️' : '🌧️';
+    const cloudyIcon = isDay ? '🌤️' : '☁️';
+    // The animated raindrops only appear once confidence actually crosses the
+    // halfway point — below that, showing a raining cloud for what's really just
+    // a coin-flip forecast oversells the certainty, even if the wording already
+    // hedges with "Chance of".
     if(agreementPct === null || agreementPct >= 70) return {text:rainName, icon:lightIcon};
-    if(agreementPct >= 35) return {text:`Chance of ${rainName}`, icon:lightIcon};
-    return {text:`Slight Chance of ${rainName}`, icon: isDay ? '🌤️' : '☁️'};
+    if(agreementPct >= 50) return {text:`Chance of ${rainName}`, icon:lightIcon};
+    if(agreementPct >= 35) return {text:`Chance of ${rainName}`, icon:cloudyIcon};
+    return {text:`Slight Chance of ${rainName}`, icon:cloudyIcon};
   }
 
   // No rain from the primary signal, but if a real chunk of models still disagree
-  // and show rain, say so rather than calling it flatly clear.
+  // and show rain, say so rather than calling it flatly clear. Same rule as above:
+  // only show the rain icon once that disagreement clears 50%.
   if(agreementPct !== null && agreementPct >= 25){
-    return {text:'Chance of Rain', icon: isDay ? '🌦️' : '🌧️'};
+    const rainIcon = isDay ? '🌦️' : '🌧️';
+    const cloudyIcon = isDay ? '🌤️' : '☁️';
+    if(agreementPct >= 50) return {text:'Chance of Rain', icon:rainIcon};
+    return {text:'Slight Chance of Rain', icon:cloudyIcon};
   }
 
   if(cloudPct === null || cloudPct === undefined){

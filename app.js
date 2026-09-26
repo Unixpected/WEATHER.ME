@@ -216,6 +216,8 @@ initTheme();
 const PROVIDERS = [
   {key:'owm', name:'OpenWeatherMap', color:'#4da3ff'},
   {key:'wapi', name:'WeatherAPI.com', color:'#2ecc71'},
+  {key:'ms', name:'Meteosource', color:'#f5b942'},
+  {key:'vc', name:'Visual Crossing', color:'#c07bff'},
 ];
 
 function median(arr){
@@ -277,7 +279,9 @@ function offsetPoints(lat, lon, km=5){
 // touching this file. ---
 const DEFAULT_API_KEYS = {
   owm: '3f6499c1073e6554d41b995facf9741b',
-  weatherapi: '16dbd0fef6d0408885d30629262609'
+  weatherapi: '16dbd0fef6d0408885d30629262609',
+  meteosource: '4uslnx6d1gyq7brc3nyszx83rnmgsh5a5193m52u',
+  visualcrossing: 'TTQGL824XMK5WKTJHLLLJBSBF'
 };
 function getApiKey(provider){
   try{
@@ -304,6 +308,69 @@ async function fetchWeatherAPI(lat, lon, days=2){
   const res = await fetch(url);
   if(!res.ok) throw new Error('WeatherAPI.com error ' + res.status);
   return res.json();
+}
+async function fetchMeteosource(lat, lon){
+  const url = `https://www.meteosource.com/api/v1/free/point?lat=${lat}&lon=${lon}&sections=hourly&language=en&units=metric&key=${getApiKey('meteosource')}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('Meteosource error ' + res.status);
+  return res.json();
+}
+async function fetchVisualCrossing(lat, lon){
+  const url = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/${lat},${lon}?unitGroup=metric&include=hours&key=${getApiKey('visualcrossing')}&contentType=json`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('Visual Crossing error ' + res.status);
+  return res.json();
+}
+// Flattens each provider's own hourly shape into a common {date, temp, precip, wind,
+// windDir, cloud, humidity, pressure, feels, uv} list so fetchProviders() below can
+// look them up the same way regardless of source.
+function normalizeMeteosource(json){
+  const items = json.hourly?.data || [];
+  return items.map(h => ({
+    date: new Date(h.date),
+    temp: h.temperature ?? null,
+    precip: h.precipitation?.total ?? 0,
+    wind: h.wind?.speed != null ? h.wind.speed*3.6 : null, // m/s -> km/h
+    windDir: h.wind?.angle ?? null,
+    cloud: h.cloud_cover?.total ?? null,
+    humidity: h.humidity ?? null,
+    pressure: h.pressure ?? null,
+    feels: h.feels_like ?? h.temperature ?? null,
+    uv: h.uv_index ?? null
+  }));
+}
+function normalizeVisualCrossing(json){
+  const out = [];
+  (json.days || []).forEach(day => {
+    (day.hours || []).forEach(h => {
+      out.push({
+        date: new Date(`${day.datetime}T${h.datetime}`),
+        temp: h.temp ?? null,
+        precip: h.precip ?? 0,
+        wind: h.windspeed ?? null, // already km/h under unitGroup=metric
+        windDir: h.winddir ?? null,
+        cloud: h.cloudcover ?? null,
+        humidity: h.humidity ?? null,
+        pressure: h.pressure ?? null,
+        feels: h.feelslike ?? h.temp ?? null,
+        uv: h.uvindex ?? null
+      });
+    });
+  });
+  return out;
+}
+// Generic "closest timestamp" lookup, used to snap any provider's native time grid
+// (3-hourly OWM, or any gaps in the other feeds) onto the shared hourly timeline.
+function buildNearestLookup(items, getDate){
+  const times = items.map(getDate);
+  return function(t){
+    let best = null, bestDiff = Infinity;
+    items.forEach((it, i) => {
+      const diff = Math.abs(times[i] - t);
+      if(diff < bestDiff){ bestDiff = diff; best = it; }
+    });
+    return best;
+  };
 }
 
 // Astro times come back as e.g. "05:47 AM" — anchor them to the forecast day's
@@ -336,7 +403,9 @@ function buildDailyFromWapi(wapiJson){
 // are snapped to whichever hour they're closest to (its own docs describe this as
 // the intended way to read the 5-day/3-hour feed at finer-than-3-hour resolution).
 async function fetchProviders(lat, lon){
-  const [owmJson, wapiJson] = await Promise.all([fetchOWM(lat, lon), fetchWeatherAPI(lat, lon)]);
+  const [owmJson, wapiJson, msJson, vcJson] = await Promise.all([
+    fetchOWM(lat, lon), fetchWeatherAPI(lat, lon), fetchMeteosource(lat, lon), fetchVisualCrossing(lat, lon)
+  ]);
 
   const wapiHours = [];
   (wapiJson.forecast?.forecastday || []).forEach(day => wapiHours.push(...(day.hour || [])));
@@ -345,63 +414,67 @@ async function fetchProviders(lat, lon){
     .filter(h => new Date(h.time.replace(' ', 'T')) > new Date(now.getTime() - 60*60*1000))
     .slice(0, 48);
 
-  const owmList = owmJson.list || [];
-  const owmTimes = owmList.map(e => new Date(e.dt * 1000));
-  function nearestOwm(t){
-    let best = null, bestDiff = Infinity;
-    owmList.forEach((e, i) => {
-      const diff = Math.abs(owmTimes[i] - t);
-      if(diff < bestDiff){ bestDiff = diff; best = e; }
-    });
-    return best;
-  }
+  const owmLookup = buildNearestLookup(owmJson.list || [], e => new Date(e.dt*1000));
+  const msLookup = buildNearestLookup(normalizeMeteosource(msJson), it => it.date);
+  const vcLookup = buildNearestLookup(normalizeVisualCrossing(vcJson), it => it.date);
 
-  const time=[], t_owm=[], t_wapi=[], p_owm=[], p_wapi=[], w_owm=[], w_wapi=[],
-        wd_owm=[], wd_wapi=[], c_owm=[], c_wapi=[], h_owm=[], h_wapi=[],
-        pr_owm=[], pr_wapi=[], f_owm=[], f_wapi=[], uv_owm=[], uv_wapi=[];
+  const FIELDS = ['temperature_2m','precipitation','wind_speed_10m','wind_direction_10m',
+    'cloud_cover','relative_humidity_2m','pressure_msl','apparent_temperature','uv_index'];
+  const time = [];
+  const series = {};
+  PROVIDERS.forEach(p => FIELDS.forEach(f => { series[`${f}_${p.key}`] = []; }));
 
   windowHours.forEach(h => {
     const t = new Date(h.time.replace(' ', 'T'));
     time.push(t.toISOString());
-    const o = nearestOwm(t);
-    t_owm.push(o ? o.main.temp : null);
-    // OWM's rain['3h'] is accumulated over 3 hours; divide down to an hourly rate
-    // so it's comparable to WeatherAPI's per-hour precip_mm.
-    p_owm.push(o ? (o.rain && o.rain['3h'] !== undefined ? o.rain['3h']/3 : 0) : null);
-    w_owm.push(o ? o.wind.speed*3.6 : null); // m/s -> km/h
-    wd_owm.push(o ? o.wind.deg : null);
-    c_owm.push(o ? o.clouds.all : null);
-    h_owm.push(o ? o.main.humidity : null);
-    pr_owm.push(o ? o.main.pressure : null);
-    f_owm.push(o ? o.main.feels_like : null);
-    uv_owm.push(null); // not on this OWM plan — WeatherAPI supplies UV instead
 
-    t_wapi.push(h.temp_c);
-    p_wapi.push(h.precip_mm ?? 0);
-    w_wapi.push(h.wind_kph);
-    wd_wapi.push(h.wind_degree);
-    c_wapi.push(h.cloud);
-    h_wapi.push(h.humidity);
-    pr_wapi.push(h.pressure_mb);
-    f_wapi.push(h.feelslike_c);
-    uv_wapi.push(h.uv ?? null);
+    const o = owmLookup(t);
+    series.temperature_2m_owm.push(o ? o.main.temp : null);
+    // OWM's rain['3h'] is accumulated over 3 hours; divide down to an hourly rate
+    // so it's comparable to the other providers' per-hour precip figures.
+    series.precipitation_owm.push(o ? (o.rain && o.rain['3h'] !== undefined ? o.rain['3h']/3 : 0) : null);
+    series.wind_speed_10m_owm.push(o ? o.wind.speed*3.6 : null); // m/s -> km/h
+    series.wind_direction_10m_owm.push(o ? o.wind.deg : null);
+    series.cloud_cover_owm.push(o ? o.clouds.all : null);
+    series.relative_humidity_2m_owm.push(o ? o.main.humidity : null);
+    series.pressure_msl_owm.push(o ? o.main.pressure : null);
+    series.apparent_temperature_owm.push(o ? o.main.feels_like : null);
+    series.uv_index_owm.push(null); // not on this OWM plan
+
+    series.temperature_2m_wapi.push(h.temp_c);
+    series.precipitation_wapi.push(h.precip_mm ?? 0);
+    series.wind_speed_10m_wapi.push(h.wind_kph);
+    series.wind_direction_10m_wapi.push(h.wind_degree);
+    series.cloud_cover_wapi.push(h.cloud);
+    series.relative_humidity_2m_wapi.push(h.humidity);
+    series.pressure_msl_wapi.push(h.pressure_mb);
+    series.apparent_temperature_wapi.push(h.feelslike_c);
+    series.uv_index_wapi.push(h.uv ?? null);
+
+    const m = msLookup(t);
+    series.temperature_2m_ms.push(m ? m.temp : null);
+    series.precipitation_ms.push(m ? m.precip : null);
+    series.wind_speed_10m_ms.push(m ? m.wind : null);
+    series.wind_direction_10m_ms.push(m ? m.windDir : null);
+    series.cloud_cover_ms.push(m ? m.cloud : null);
+    series.relative_humidity_2m_ms.push(m ? m.humidity : null);
+    series.pressure_msl_ms.push(m ? m.pressure : null);
+    series.apparent_temperature_ms.push(m ? m.feels : null);
+    series.uv_index_ms.push(m ? m.uv : null);
+
+    const v = vcLookup(t);
+    series.temperature_2m_vc.push(v ? v.temp : null);
+    series.precipitation_vc.push(v ? v.precip : null);
+    series.wind_speed_10m_vc.push(v ? v.wind : null);
+    series.wind_direction_10m_vc.push(v ? v.windDir : null);
+    series.cloud_cover_vc.push(v ? v.cloud : null);
+    series.relative_humidity_2m_vc.push(v ? v.humidity : null);
+    series.pressure_msl_vc.push(v ? v.pressure : null);
+    series.apparent_temperature_vc.push(v ? v.feels : null);
+    series.uv_index_vc.push(v ? v.uv : null);
   });
 
-  return {
-    hourly: {
-      time,
-      temperature_2m_owm:t_owm, temperature_2m_wapi:t_wapi,
-      precipitation_owm:p_owm, precipitation_wapi:p_wapi,
-      wind_speed_10m_owm:w_owm, wind_speed_10m_wapi:w_wapi,
-      wind_direction_10m_owm:wd_owm, wind_direction_10m_wapi:wd_wapi,
-      cloud_cover_owm:c_owm, cloud_cover_wapi:c_wapi,
-      relative_humidity_2m_owm:h_owm, relative_humidity_2m_wapi:h_wapi,
-      pressure_msl_owm:pr_owm, pressure_msl_wapi:pr_wapi,
-      apparent_temperature_owm:f_owm, apparent_temperature_wapi:f_wapi,
-      uv_index_owm:uv_owm, uv_index_wapi:uv_wapi,
-    },
-    daily: buildDailyFromWapi(wapiJson)
-  };
+  return {hourly: {time, ...series}, daily: buildDailyFromWapi(wapiJson)};
 }
 
 // 5-day outlook: grouped from OpenWeatherMap's 5-day/3-hour feed (its native use case),

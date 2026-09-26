@@ -45,7 +45,7 @@
 
   <section class="card-surface admin-card">
     <h2>Weather provider API keys</h2>
-    <p class="hint">Used for every forecast fetch (OpenWeatherMap for the 5-day outlook + air quality, WeatherAPI.com for the hourly consensus, trip planner and micro-grid). Leave a field blank and save to fall back to the app's built-in default for that provider.</p>
+    <p class="hint">Used for every forecast fetch — OpenWeatherMap for the 5-day outlook + air quality, and OpenWeatherMap, WeatherAPI.com, Meteosource and Visual Crossing together for the hourly provider consensus. Leave a field blank and save to fall back to the app's built-in default for that provider.</p>
 
     <div class="field-row">
       <label>OpenWeatherMap API key</label>
@@ -60,6 +60,22 @@
       <div class="key-row">
         <input type="password" id="wapiKeyInput" placeholder="Paste your WeatherAPI.com key">
         <button type="button" class="ghost-btn" onclick="toggleReveal('wapiKeyInput')">👁</button>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <label>Meteosource API key</label>
+      <div class="key-row">
+        <input type="password" id="msKeyInput" placeholder="Paste your Meteosource key">
+        <button type="button" class="ghost-btn" onclick="toggleReveal('msKeyInput')">👁</button>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <label>Visual Crossing API key</label>
+      <div class="key-row">
+        <input type="password" id="vcKeyInput" placeholder="Paste your Visual Crossing key">
+        <button type="button" class="ghost-btn" onclick="toggleReveal('vcKeyInput')">👁</button>
       </div>
     </div>
 
@@ -97,6 +113,8 @@ function initKeyFields(){
   const stored = loadStoredKeys();
   document.getElementById('owmKeyInput').value = stored.owm || '';
   document.getElementById('wapiKeyInput').value = stored.weatherapi || '';
+  document.getElementById('msKeyInput').value = stored.meteosource || '';
+  document.getElementById('vcKeyInput').value = stored.visualcrossing || '';
 }
 function toggleReveal(id){
   const el = document.getElementById(id);
@@ -110,9 +128,13 @@ function flashSaved(id){
 function saveKeys(){
   const owm = document.getElementById('owmKeyInput').value.trim();
   const weatherapi = document.getElementById('wapiKeyInput').value.trim();
+  const meteosource = document.getElementById('msKeyInput').value.trim();
+  const visualcrossing = document.getElementById('vcKeyInput').value.trim();
   const toSave = {};
   if(owm) toSave.owm = owm;
   if(weatherapi) toSave.weatherapi = weatherapi;
+  if(meteosource) toSave.meteosource = meteosource;
+  if(visualcrossing) toSave.visualcrossing = visualcrossing;
   try{
     localStorage.setItem(KEYS_STORAGE, JSON.stringify(toSave));
     flashSaved('keySaveMsg');
@@ -124,6 +146,8 @@ function resetKeys(){
   try{ localStorage.removeItem(KEYS_STORAGE); }catch(e){}
   document.getElementById('owmKeyInput').value = '';
   document.getElementById('wapiKeyInput').value = '';
+  document.getElementById('msKeyInput').value = '';
+  document.getElementById('vcKeyInput').value = '';
   flashSaved('keySaveMsg');
 }
 

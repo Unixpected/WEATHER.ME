@@ -256,6 +256,16 @@ function precipAgreementPct(values, probValues){
   return m === null ? null : Math.round(m);
 }
 
+// % of providers (that have a condition-code/text field to check) flagging thunderstorm
+// conditions for this hour — a real categorical signal from each provider's own data,
+// not inferred from rainfall rate.
+function thunderAgreementPct(values){
+  const valid = values.filter(v => v === 0 || v === 1);
+  if(!valid.length) return null;
+  const flagged = valid.filter(v => v === 1).length;
+  return Math.round((flagged/valid.length)*100);
+}
+
 // Same canonical per-provider % as above, but also names which providers are actually
 // forecasting rain (pct >= 50) for the descriptive "X of Y providers" text.
 function computeAgreement(precip, hourIdx, precipProb){
@@ -346,7 +356,8 @@ function normalizeMeteosource(json){
     humidity: h.humidity ?? null,
     pressure: h.pressure ?? null,
     feels: h.feels_like ?? h.temperature ?? null,
-    uv: h.uv_index ?? null
+    uv: h.uv_index ?? null,
+    weatherText: `${h.weather ?? ''} ${h.summary ?? ''}` // used only to detect "thunderstorm"
   }));
 }
 function normalizeVisualCrossing(json){
@@ -364,7 +375,8 @@ function normalizeVisualCrossing(json){
         humidity: h.humidity ?? null,
         pressure: h.pressure ?? null,
         feels: h.feelslike ?? h.temp ?? null,
-        uv: h.uvindex ?? null
+        uv: h.uvindex ?? null,
+        weatherText: `${h.conditions ?? ''} ${h.icon ?? ''}` // used only to detect "thunderstorm"
       });
     });
   });
@@ -430,7 +442,7 @@ async function fetchProviders(lat, lon){
   const vcLookup = buildNearestLookup(normalizeVisualCrossing(vcJson), it => it.date);
 
   const FIELDS = ['temperature_2m','precipitation','precip_probability','wind_speed_10m','wind_direction_10m',
-    'cloud_cover','relative_humidity_2m','pressure_msl','apparent_temperature','uv_index'];
+    'cloud_cover','relative_humidity_2m','pressure_msl','apparent_temperature','uv_index','thunder'];
   const time = [];
   const series = {};
   PROVIDERS.forEach(p => FIELDS.forEach(f => { series[`${f}_${p.key}`] = []; }));
@@ -454,6 +466,9 @@ async function fetchProviders(lat, lon){
     // OWM's own "probability of precipitation" for this 3-hour block — a real,
     // model-derived confidence figure, not something we're inferring from amount alone.
     series.precip_probability_owm.push(o ? Math.round((o.pop||0)*100) : null);
+    // OWM's own condition code: 200–232 is its documented "Thunderstorm" group — a real
+    // categorical signal, unlike inferring lightning risk from rainfall rate alone.
+    series.thunder_owm.push(o ? (o.weather && o.weather[0] && o.weather[0].id >= 200 && o.weather[0].id < 300 ? 1 : 0) : null);
 
     series.temperature_2m_wapi.push(h.temp_c);
     series.precipitation_wapi.push(h.precip_mm ?? 0);
@@ -465,6 +480,7 @@ async function fetchProviders(lat, lon){
     series.apparent_temperature_wapi.push(h.feelslike_c);
     series.uv_index_wapi.push(h.uv ?? null);
     series.precip_probability_wapi.push(h.chance_of_rain ?? null);
+    series.thunder_wapi.push(h.condition ? (/thunder/i.test(h.condition.text||'') ? 1 : 0) : null);
 
     const m = msLookup(t);
     series.temperature_2m_ms.push(m ? m.temp : null);
@@ -477,6 +493,7 @@ async function fetchProviders(lat, lon){
     series.apparent_temperature_ms.push(m ? m.feels : null);
     series.uv_index_ms.push(m ? m.uv : null);
     series.precip_probability_ms.push(null); // not available on Meteosource's free plan
+    series.thunder_ms.push(m ? (/thunder/i.test(m.weatherText||'') ? 1 : 0) : null);
 
     const v = vcLookup(t);
     series.temperature_2m_vc.push(v ? v.temp : null);
@@ -489,6 +506,7 @@ async function fetchProviders(lat, lon){
     series.apparent_temperature_vc.push(v ? v.feels : null);
     series.uv_index_vc.push(v ? v.uv : null);
     series.precip_probability_vc.push(v ? v.precipProb : null);
+    series.thunder_vc.push(v ? (/thunder/i.test(v.weatherText||'') ? 1 : 0) : null);
   });
 
   return {hourly: {time, ...series}, daily: buildDailyFromWapi(wapiJson)};
@@ -500,19 +518,27 @@ async function fetchFiveDayOverview(lat, lon){
   const json = await fetchOWM(lat, lon);
   const byDay = {};
   (json.list || []).forEach(entry => {
-    const day = entry.dt_txt.slice(0, 10);
+    // Group by each entry's actual LOCAL calendar date, not the UTC date string OWM
+    // returns in dt_txt. Grouping by raw UTC date misaligns day boundaries by several
+    // hours for any location that isn't near UTC+0 (Manila is UTC+8), which was
+    // silently splitting/skipping a calendar day in the outlook.
+    const d = new Date(entry.dt * 1000);
+    const day = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     (byDay[day] = byDay[day] || []).push(entry);
   });
   const days = Object.keys(byDay).sort().slice(0, 5);
-  const time=[], tmax=[], tmin=[], popMax=[];
+  const time=[], tmax=[], tmin=[], popMax=[], thunder=[];
   days.forEach(day => {
     const entries = byDay[day];
-    time.push(day);
+    time.push(day+'T00:00:00'); // no 'Z' — parsed as local midnight, matching the local-date key above
     tmax.push(Math.max(...entries.map(e => e.main.temp)));
     tmin.push(Math.min(...entries.map(e => e.main.temp)));
     popMax.push(Math.max(...entries.map(e => Math.round((e.pop||0)*100))));
+    // Real thunderstorm signal (OWM condition code 200-232) rather than guessing from
+    // rainfall amount — if any 3-hour block that day is flagged, the day is too.
+    thunder.push(entries.some(e => e.weather && e.weather[0] && e.weather[0].id >= 200 && e.weather[0].id < 300));
   });
-  return {daily: {time, temperature_2m_max:tmax, temperature_2m_min:tmin, precipitation_probability_max:popMax}};
+  return {daily: {time, temperature_2m_max:tmax, temperature_2m_min:tmin, precipitation_probability_max:popMax, thunder}};
 }
 
 // Air quality via OpenWeatherMap's Air Pollution API. Still runs PM2.5 through the
@@ -608,6 +634,7 @@ function buildFineNowcast(hourlyProviders, startIdx){
   const precip = modelSeries(hourlyProviders, 'precipitation');
   const precipProb = modelSeries(hourlyProviders, 'precip_probability');
   const clouds = modelSeries(hourlyProviders, 'cloud_cover');
+  const thunder = modelSeries(hourlyProviders, 'thunder');
 
   const hourlyTemp = times.map((_, i) => median(PROVIDERS.map(m => temps[m.key][i])));
   const hourlyCloud = times.map((_, i) => median(PROVIDERS.map(m => clouds[m.key][i])));
@@ -634,6 +661,7 @@ function buildFineNowcast(hourlyProviders, startIdx){
         time: t.toISOString(),
         temp, cloud,
         agreement: computeAgreement(precip, i, precipProb),
+        thunderPct: thunderAgreementPct(PROVIDERS.map(m => thunder[m.key][i])),
         precipMm: (hourlyPrecip[i] ?? 0) / 4
       });
     }
@@ -907,7 +935,15 @@ function isDaytime(date){
 // with confidence wording ("Chance of..."), falling back to cloud-cover-based sky
 // conditions (Sunny/Partly Cloudy/Overcast, day- or night-aware) when there's no
 // meaningful rain signal. This replaces the old rain-only labeling.
-function conditionLabel(mmPerHour, cloudPct, agreementPct, isDay){
+function conditionLabel(mmPerHour, cloudPct, agreementPct, isDay, thunderPct){
+  // A real thunderstorm signal from provider condition codes takes priority over
+  // everything below — lightning risk doesn't scale cleanly with rainfall rate, so
+  // this replaces the old ">4mm/hr = thunder" guess with an actual categorical flag.
+  if(thunderPct !== null && thunderPct !== undefined){
+    if(thunderPct >= 50) return {text:'Thunderstorm', icon:'⛈️'};
+    if(thunderPct >= 25) return {text:'Chance of Thunderstorm', icon:'⛈️'};
+  }
+
   let rainName = null;
   if(mmPerHour > 4) rainName = 'Heavy Rain';
   else if(mmPerHour > 0.5) rainName = 'Moderate Rain';
@@ -916,7 +952,7 @@ function conditionLabel(mmPerHour, cloudPct, agreementPct, isDay){
   if(rainName){
     // ⛈️/🌧️ are neutral (no sun drawn in them), safe for day or night.
     // 🌦️/🌤️ literally have a sun in the glyph, so only use those during the day.
-    if(rainName === 'Heavy Rain') return {text:rainName, icon:'⛈️'};
+    if(rainName === 'Heavy Rain') return {text:rainName, icon:'🌧️'};
     if(rainName === 'Moderate Rain') return {text:rainName, icon:'🌧️'};
     const lightIcon = isDay ? '🌦️' : '🌧️';
     const cloudyIcon = isDay ? '🌤️' : '☁️';
@@ -965,14 +1001,14 @@ function confidenceLine(agreement){
 // Renders the Pixel-style connected 24h strip: an SVG line tracing temperature across
 // the hours, with wind speed and condition icon per column, and the real sunset time
 // inserted at its correct chronological position (not just appended at the end).
-function renderHourStrip(times, temps, winds, rainPcts, clouds, sunTimes, precipMm){
+function renderHourStrip(times, temps, winds, rainPcts, clouds, sunTimes, precipMm, thunderPcts){
   const container = document.getElementById('hourStrip');
   if(!container || !times.length){ if(container) container.innerHTML=''; return; }
 
   const colWidth = 58;
   const cols = times.map((t, i) => ({
     time: new Date(t), temp: temps[i], wind: winds[i], rain: rainPcts[i], cloud: clouds[i],
-    mm: precipMm ? precipMm[i] : null, isSunset:false
+    mm: precipMm ? precipMm[i] : null, thunder: thunderPcts ? thunderPcts[i] : null, isSunset:false
   }));
 
   // Insert a sunset marker column at its real chronological slot, if it falls within this window
@@ -1015,7 +1051,7 @@ function renderHourStrip(times, temps, winds, rainPcts, clouds, sunTimes, precip
         <div class="sc-val">${fmtHour(c.time)}</div>
       </div>`;
     }
-    const cond = conditionLabel(c.mm ?? 0, c.cloud, c.rain, isDaytime(c.time));
+    const cond = conditionLabel(c.mm ?? 0, c.cloud, c.rain, isDaytime(c.time), c.thunder);
     return `<div class="strip-col">
       <div class="sc-time">${fmtHour(c.time)}</div>
       <div class="sc-val">${c.wind !== null && c.wind !== undefined ? c.wind.toFixed(1)+' km/h' : '--'}</div>
@@ -1053,9 +1089,10 @@ function renderHourCards(finePoints){
     const first = g.points[0];
     const avgTemp = mean(g.points.map(p=>p.temp));
     const maxAgreement = Math.max(...g.points.map(p => p.agreement?.pct ?? 0));
+    const maxThunder = Math.max(...g.points.map(p => p.thunderPct ?? 0));
     const avgCloud = mean(g.points.map(p=>p.cloud).filter(c=>c!==null && c!==undefined));
     const mmPerHour = mean(g.points.map(p=>p.precipMm)) * 4;
-    const cond = conditionLabel(mmPerHour, avgCloud, maxAgreement, isDaytime(new Date(first.time)));
+    const cond = conditionLabel(mmPerHour, avgCloud, maxAgreement, isDaytime(new Date(first.time)), maxThunder);
     return `
       <div class="hour-card" tabindex="0" role="button" aria-label="Show details for ${fmtHour(first.time)}"
         onclick="showHourDetails('${g.key}')" onkeypress="if(event.key==='Enter') showHourDetails('${g.key}')">
@@ -1131,7 +1168,7 @@ function renderMinuteList(finePoints, baseIdx){
     const idx = baseIdx + i;
     const mmPerHour = p.precipMm * 4;
     const startTime = new Date(p.time);
-    const label = conditionLabel(mmPerHour, p.cloud, p.agreement?.pct ?? null, isDaytime(startTime));
+    const label = conditionLabel(mmPerHour, p.cloud, p.agreement?.pct ?? null, isDaytime(startTime), p.thunderPct);
     const ag = p.agreement || {pct:null, count:0, total:0, names:[]};
 
     const endTime = new Date(startTime.getTime() + 15*60*1000);
@@ -1140,7 +1177,7 @@ function renderMinuteList(finePoints, baseIdx){
     const blockId = `mb${idx}`;
 
     const minuteRows = buildMinutesForPoint(lastFinePoints, idx).map(row => {
-      const rowLabel = conditionLabel(row.mmPerHour, p.cloud, ag.pct, isDaytime(row.time));
+      const rowLabel = conditionLabel(row.mmPerHour, p.cloud, ag.pct, isDaytime(row.time), p.thunderPct);
       return `
         <div class="minute-row">
           <div class="m-time">${fmtHour(row.time)}</div>
@@ -1788,7 +1825,7 @@ function loadFiveDay(lat, lon){
       const hi = fd.daily.temperature_2m_max[i];
       const lo = fd.daily.temperature_2m_min[i];
       const rain = fd.daily.precipitation_probability_max[i];
-      const icon = rain >= 50 ? '🌧️' : rain >= 20 ? '🌦️' : '☀️';
+      const icon = fd.daily.thunder && fd.daily.thunder[i] ? '⛈️' : rain >= 50 ? '🌧️' : rain >= 20 ? '🌦️' : '☀️';
       const allHi = Math.max(...fd.daily.temperature_2m_max);
       const allLo = Math.min(...fd.daily.temperature_2m_min);
       const range = allHi - allLo || 1;
@@ -1837,6 +1874,7 @@ async function runForLocation(lat, lon, label){
     const windDirSeries = modelSeries(hourly, 'wind_direction_10m');
     const pressureSeries = modelSeries(hourly, 'pressure_msl');
     const uvSeries = modelSeries(hourly, 'uv_index');
+    const thunderSeries = modelSeries(hourly, 'thunder');
 
     const curTemps = PROVIDERS.map(m => temps[m.key][startIdx]);
     const curPrecip = PROVIDERS.map(m => precip[m.key][startIdx]);
@@ -1848,9 +1886,11 @@ async function runForLocation(lat, lon, label){
     const curWindDir = PROVIDERS.map(m => windDirSeries[m.key][startIdx]);
     const curPressure = PROVIDERS.map(m => pressureSeries[m.key][startIdx]);
     const curUV = PROVIDERS.map(m => uvSeries[m.key][startIdx]);
+    const curThunder = PROVIDERS.map(m => thunderSeries[m.key][startIdx]);
 
     const consensusTemp = median(curTemps);
     const consensusRain = precipAgreementPct(curPrecip, curPrecipProb);
+    const consensusThunder = thunderAgreementPct(curThunder);
     const consensusWind = median(curWinds);
     const consensusCloud = median(curClouds);
     const consensusPrecipAmt = median(curPrecip);
@@ -1861,7 +1901,7 @@ async function runForLocation(lat, lon, label){
     const consensusUV = median(curUV);
     const spread = stddev(curTemps);
 
-    const nowCondition = conditionLabel(consensusPrecipAmt ?? 0, consensusCloud, consensusRain, isDaytime(new Date(hourly.time[startIdx])));
+    const nowCondition = conditionLabel(consensusPrecipAmt ?? 0, consensusCloud, consensusRain, isDaytime(new Date(hourly.time[startIdx])), consensusThunder);
 
     document.getElementById('heroTemp').textContent = `${consensusTemp?.toFixed(0) ?? '--'}°`;
     document.getElementById('heroCondition').textContent = `${nowCondition.icon} ${nowCondition.text}`;
@@ -1989,11 +2029,12 @@ async function runForLocation(lat, lon, label){
     const rainConsensusData = chartLabels.map((_,i) => precipAgreementPct(PROVIDERS.map(m => precip[m.key][startIdx+i]), PROVIDERS.map(m => precipProb[m.key][startIdx+i])));
     const cloudConsensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => clouds[m.key][startIdx+i])));
     const precipAmtData = chartLabels.map((_,i) => median(PROVIDERS.map(m => precip[m.key][startIdx+i])));
+    const thunderConsensusData = chartLabels.map((_,i) => thunderAgreementPct(PROVIDERS.map(m => thunderSeries[m.key][startIdx+i])));
     chartDatasets.push({label:'Consensus', data:consensusData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
 
     // Connected-line hourly strip (temperature line, wind speed per hour, sunset marked)
     const windData = chartLabels.map((_,i) => median(PROVIDERS.map(m => winds[m.key][startIdx+i])));
-    renderHourStrip(hourly.time.slice(startIdx, startIdx+24), consensusData, windData, rainConsensusData, cloudConsensusData, SUN_TIMES, precipAmtData);
+    renderHourStrip(hourly.time.slice(startIdx, startIdx+24), consensusData, windData, rainConsensusData, cloudConsensusData, SUN_TIMES, precipAmtData, thunderConsensusData);
 
     if(window.mainChartInstance) window.mainChartInstance.destroy();
     const isLight = document.documentElement.getAttribute('data-theme') === 'light';
@@ -2067,6 +2108,89 @@ async function runForLocation(lat, lon, label){
     ).join('');
     document.getElementById('rainChartNote').innerHTML =
       `Each line is that provider's own rain chance, interpolated to 15-minute steps from its hourly forecast — not a real minutely feed, since none of these providers publish one on their free plans. Providers that don't publish a probability field (Meteosource) show a flat 0%/100% read of whether their own forecast amount crosses ${RAIN_TRACE_THRESHOLD_MM}mm.`;
+
+    // Shared renderer for the remaining per-provider comparison charts below — same
+    // look as the temperature chart above, just parameterized by unit/decimals/range
+    // so wind, feels-like, UV, and thunder don't each need their own Chart.js block.
+    function renderProviderChart(canvasId, legendId, labels, datasets, opts={}){
+      const {suffix='', decimals=1, min, max} = opts;
+      const key = canvasId + 'Instance';
+      if(window[key]) window[key].destroy();
+      window[key] = new Chart(document.getElementById(canvasId), {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+          animation:false,
+          interaction:{mode:'index', intersect:false},
+          plugins:{
+            legend:{display:false},
+            tooltip:{
+              backgroundColor: isLight ? '#ffffff' : '#131d33',
+              titleColor: isLight ? '#101828' : '#eef2fb',
+              bodyColor: isLight ? '#101828' : '#eef2fb',
+              borderColor: gridColor, borderWidth:1, padding:10, cornerRadius:8,
+              callbacks:{ label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y === null || ctx.parsed.y === undefined ? '—' : ctx.parsed.y.toFixed(decimals)+suffix}` }
+            }
+          },
+          scales:{
+            x:{ticks:{color:tickColor, maxTicksLimit:10}, grid:{color:gridColor}},
+            y:{min, max, ticks:{color:tickColor, callback:(v)=>v+suffix}, grid:{color:gridColor}}
+          }
+        }
+      });
+      document.getElementById(legendId).innerHTML = datasets.map(d =>
+        `<span><span class="dot" style="background:${d.borderColor}"></span>${d.label}</span>`
+      ).join('');
+    }
+
+    // Wind speed, per provider
+    const windDatasets = PROVIDERS.map(m => ({
+      label: m.name, data: winds[m.key].slice(startIdx, startIdx+24), borderColor: m.color,
+      tension:.3, pointRadius:0, borderWidth:1.4
+    }));
+    windDatasets.push({label:'Consensus', data:windData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
+    renderProviderChart('windChart', 'windChartLegend', chartLabels, windDatasets, {suffix:' km/h', decimals:1});
+    document.getElementById('windChartNote').innerHTML =
+      `Each provider's own wind-speed forecast at 10m, hourly for the next 24 hours. Consensus is the median across all of them, same as the temperature chart above.`;
+
+    // Feels-like ("RealFeel"), per provider
+    const feelsDatasets = PROVIDERS.map(m => ({
+      label: m.name, data: feelsLikeSeries[m.key].slice(startIdx, startIdx+24), borderColor: m.color,
+      tension:.3, pointRadius:0, borderWidth:1.4
+    }));
+    const feelsConsensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => feelsLikeSeries[m.key][startIdx+i])));
+    feelsDatasets.push({label:'Consensus', data:feelsConsensusData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
+    renderProviderChart('feelsChart', 'feelsChartLegend', chartLabels, feelsDatasets, {suffix:'°', decimals:1});
+    document.getElementById('feelsChartNote').innerHTML =
+      `Each provider's own "feels like" temperature (their heat-index/wind-chill calculation, not ours). None of these four providers publish a separate "in the shade" variant the way AccuWeather's RealFeel Shade does, so that specific figure isn't something we can show honestly here — this is each provider's one general feels-like number.`;
+
+    // UV index, per provider — also called out as each provider's forecast peak for today
+    const uvDatasets = PROVIDERS.map(m => ({
+      label: m.name, data: uvSeries[m.key].slice(startIdx, startIdx+24), borderColor: m.color,
+      tension:.3, pointRadius:0, borderWidth:1.4
+    }));
+    const uvConsensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => uvSeries[m.key][startIdx+i])));
+    uvDatasets.push({label:'Consensus', data:uvConsensusData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
+    renderProviderChart('uvChart', 'uvChartLegend', chartLabels, uvDatasets, {suffix:'', decimals:1, min:0});
+    const uvMaxToday = PROVIDERS.map(m => {
+      const vals = uvSeries[m.key].slice(startIdx, startIdx+24).filter(v => v !== null && v !== undefined && !isNaN(v));
+      return vals.length ? `${m.name} ${Math.max(...vals).toFixed(1)}` : null;
+    }).filter(Boolean);
+    document.getElementById('uvChartNote').innerHTML = uvMaxToday.length
+      ? `Today's forecast peak UV by provider — ${uvMaxToday.join(', ')}. OpenWeatherMap's free plan doesn't include UV, so it's left out rather than guessed.`
+      : `UV data wasn't available from any provider for this location right now.`;
+
+    // Thunderstorm signal, per provider — categorical (flagged or not) rather than a
+    // smooth quantity, so each line steps between 0% and 100% instead of curving.
+    const thunderDatasets = PROVIDERS.map(m => ({
+      label: m.name,
+      data: thunderSeries[m.key].slice(startIdx, startIdx+24).map(v => v === null || v === undefined ? null : v*100),
+      borderColor: m.color, stepped:true, tension:0, pointRadius:0, borderWidth:1.4
+    }));
+    thunderDatasets.push({label:'Consensus', data:thunderConsensusData, borderColor:'#ffffff', stepped:true, tension:0, borderWidth:3, pointRadius:0});
+    renderProviderChart('thunderChart', 'thunderChartLegend', chartLabels, thunderDatasets, {suffix:'%', decimals:0, min:0, max:100});
+    document.getElementById('thunderChartNote').innerHTML =
+      `Each line shows whether that provider's own forecast flags thunderstorm conditions for the hour (0% = no, 100% = yes) — a real categorical signal from their condition codes, not inferred from rainfall amount. Consensus is the % of providers flagging it. See the earlier explanation for exactly which field each provider uses.`;
 
     statusEl.style.display = 'none';
     document.getElementById('app').style.display = 'block';

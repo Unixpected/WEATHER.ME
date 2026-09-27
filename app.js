@@ -965,13 +965,14 @@ function confidenceLine(agreement){
 // Renders the Pixel-style connected 24h strip: an SVG line tracing temperature across
 // the hours, with wind speed and condition icon per column, and the real sunset time
 // inserted at its correct chronological position (not just appended at the end).
-function renderHourStrip(times, temps, winds, rainPcts, clouds, sunTimes){
+function renderHourStrip(times, temps, winds, rainPcts, clouds, sunTimes, precipMm){
   const container = document.getElementById('hourStrip');
   if(!container || !times.length){ if(container) container.innerHTML=''; return; }
 
   const colWidth = 58;
   const cols = times.map((t, i) => ({
-    time: new Date(t), temp: temps[i], wind: winds[i], rain: rainPcts[i], cloud: clouds[i], isSunset:false
+    time: new Date(t), temp: temps[i], wind: winds[i], rain: rainPcts[i], cloud: clouds[i],
+    mm: precipMm ? precipMm[i] : null, isSunset:false
   }));
 
   // Insert a sunset marker column at its real chronological slot, if it falls within this window
@@ -1014,7 +1015,7 @@ function renderHourStrip(times, temps, winds, rainPcts, clouds, sunTimes){
         <div class="sc-val">${fmtHour(c.time)}</div>
       </div>`;
     }
-    const cond = conditionLabel((c.rain ?? 0) > 25 ? 0.6 : 0, c.cloud, c.rain, isDaytime(c.time));
+    const cond = conditionLabel(c.mm ?? 0, c.cloud, c.rain, isDaytime(c.time));
     return `<div class="strip-col">
       <div class="sc-time">${fmtHour(c.time)}</div>
       <div class="sc-val">${c.wind !== null && c.wind !== undefined ? c.wind.toFixed(1)+' km/h' : '--'}</div>
@@ -1992,7 +1993,7 @@ async function runForLocation(lat, lon, label){
 
     // Connected-line hourly strip (temperature line, wind speed per hour, sunset marked)
     const windData = chartLabels.map((_,i) => median(PROVIDERS.map(m => winds[m.key][startIdx+i])));
-    renderHourStrip(hourly.time.slice(startIdx, startIdx+24), consensusData, windData, rainConsensusData, cloudConsensusData, SUN_TIMES);
+    renderHourStrip(hourly.time.slice(startIdx, startIdx+24), consensusData, windData, rainConsensusData, cloudConsensusData, SUN_TIMES, precipAmtData);
 
     if(window.mainChartInstance) window.mainChartInstance.destroy();
     const isLight = document.documentElement.getAttribute('data-theme') === 'light';

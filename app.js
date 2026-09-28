@@ -88,7 +88,7 @@ function scheduleAutoRefresh(){
   if(autoRefreshTimer) return;
   autoRefreshTimer = setInterval(() => {
     if(!CURRENT || document.visibilityState !== 'visible') return;
-    runForLocation(CURRENT.lat, CURRENT.lon, CURRENT.label);
+    runForLocation(CURRENT.lat, CURRENT.lon, CURRENT.label, {silent:true});
   }, 12*60*1000);
 }
 
@@ -374,43 +374,74 @@ function getApiKey(provider){
   return DEFAULT_API_KEYS[provider];
 }
 
+// Short-lived in-memory cache so the hourly consensus, the 5-day outlook, the trip planner and
+// the micro-grid share one request per provider per location instead of each firing their own.
+// Failures are never cached, so a retry always goes back to the network.
+const API_CACHE = {};
+function cachedFetch(key, ttlMs, loader){
+  const hit = API_CACHE[key];
+  if(hit && Date.now() - hit.t < ttlMs) return hit.promise;
+  const promise = loader();
+  API_CACHE[key] = {t: Date.now(), promise};
+  promise.catch(() => { if(API_CACHE[key] && API_CACHE[key].promise === promise) delete API_CACHE[key]; });
+  return promise;
+}
+const cacheKey = (name, lat, lon, extra='') => `${name}:${(+lat).toFixed(3)},${(+lon).toFixed(3)}${extra}`;
+const API_TTL = 10*60*1000;
+const isoDay = ms => new Date(ms).toISOString().slice(0,10);
+
 async function fetchOWM(lat, lon){
-  const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=metric&appid=${getApiKey('owm')}`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('OpenWeatherMap error ' + res.status);
-  return res.json();
+  return cachedFetch(cacheKey('owm', lat, lon), API_TTL, async () => {
+    const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=metric&appid=${getApiKey('owm')}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('OpenWeatherMap error ' + res.status);
+    return res.json();
+  });
 }
 async function fetchOWMAirPollution(lat, lon){
-  const url = `https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${getApiKey('owm')}`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('Air quality unavailable');
-  return res.json();
+  return cachedFetch(cacheKey('owm-air', lat, lon), API_TTL, async () => {
+    const url = `https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${getApiKey('owm')}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('Air quality unavailable');
+    return res.json();
+  });
 }
-async function fetchWeatherAPI(lat, lon, days=2){
-  const url = `https://api.weatherapi.com/v1/forecast.json?key=${getApiKey('weatherapi')}&q=${lat},${lon}&days=${days}&aqi=no&alerts=no`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('WeatherAPI.com error ' + res.status);
-  return res.json();
+async function fetchWeatherAPI(lat, lon, days=3){
+  // Always 3 days (the free-plan maximum) so the hourly consensus, 5-day outlook, trip planner
+  // and micro-grid can all share the same cached response for a location.
+  return cachedFetch(cacheKey('wapi', lat, lon, `:${days}`), API_TTL, async () => {
+    const url = `https://api.weatherapi.com/v1/forecast.json?key=${getApiKey('weatherapi')}&q=${lat},${lon}&days=${days}&aqi=no&alerts=no`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('WeatherAPI.com error ' + res.status);
+    return res.json();
+  });
 }
 async function fetchMeteosource(lat, lon){
-  const url = `https://www.meteosource.com/api/v1/free/point?lat=${lat}&lon=${lon}&sections=hourly&language=en&units=metric&key=${getApiKey('meteosource')}`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('Meteosource error ' + res.status);
-  return res.json();
+  return cachedFetch(cacheKey('ms-hourly', lat, lon), API_TTL, async () => {
+    const url = `https://www.meteosource.com/api/v1/free/point?lat=${lat}&lon=${lon}&sections=hourly&language=en&units=metric&key=${getApiKey('meteosource')}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('Meteosource error ' + res.status);
+    return res.json();
+  });
 }
 async function fetchVisualCrossing(lat, lon){
-  const url = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/${lat},${lon}?unitGroup=metric&include=hours&key=${getApiKey('visualcrossing')}&contentType=json`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('Visual Crossing error ' + res.status);
-  return res.json();
+  // Explicit short date range: without one Visual Crossing returns ~15 days of hourly records,
+  // and it bills per record. Yesterday..+2 days (4 days) covers every timezone we can be asked about.
+  return cachedFetch(cacheKey('vc-hourly', lat, lon), API_TTL, async () => {
+    const now = Date.now(), day = 86400000;
+    const url = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/${lat},${lon}/${isoDay(now-day)}/${isoDay(now+2*day)}?unitGroup=metric&include=hours&key=${getApiKey('visualcrossing')}&contentType=json`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('Visual Crossing error ' + res.status);
+    return res.json();
+  });
 }
 // Flattens each provider's own hourly shape into a common {date, temp, precip, wind,
 // windDir, cloud, humidity, pressure, feels, uv} list so fetchProviders() below can
 // look them up the same way regardless of source.
-function normalizeMeteosource(json){
+function normalizeMeteosource(json, offsetMs){
   const items = json.hourly?.data || [];
   return items.map(h => ({
-    date: new Date(h.date),
+    date: parseLocalWithOffset(h.date, offsetMs),
     temp: h.temperature ?? null,
     precip: h.precipitation?.total ?? 0,
     wind: h.wind?.speed != null ? h.wind.speed*3.6 : null, // m/s -> km/h
@@ -428,7 +459,7 @@ function normalizeVisualCrossing(json){
   (json.days || []).forEach(day => {
     (day.hours || []).forEach(h => {
       out.push({
-        date: new Date(`${day.datetime}T${h.datetime}`),
+        date: h.datetimeEpoch ? new Date(h.datetimeEpoch*1000) : new Date(`${day.datetime}T${h.datetime}`),
         temp: h.temp ?? null,
         precip: h.precip ?? 0,
         precipProb: h.precipprob ?? null,
@@ -459,27 +490,60 @@ function buildNearestLookup(items, getDate){
   };
 }
 
+// --- Location time handling. WeatherAPI, Visual Crossing and Meteosource report times in the
+// LOCATION's local clock; parsing those strings in the viewer's timezone shifts the "current hour",
+// day/night and sunrise/sunset for any place in a different timezone. So we use real epoch
+// timestamps where a provider gives them, and derive the location's UTC offset from WeatherAPI's
+// own localtime/localtime_epoch pair for the ones that only give local strings. ---
+function locationInfo(wapiJson){
+  const loc = wapiJson?.location || {};
+  let offsetMs = -new Date().getTimezoneOffset()*60000; // fallback: the viewer's own offset
+  const m = /(\d+)-(\d+)-(\d+)\s+(\d+):(\d+)/.exec(loc.localtime || '');
+  if(m && loc.localtime_epoch){
+    const asUtc = Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5]);
+    offsetMs = Math.round((asUtc - loc.localtime_epoch*1000)/900000)*900000; // nearest 15 min
+  }
+  return {offsetMs, tz: loc.tz_id || null};
+}
+function parseLocalWithOffset(str, offsetMs){
+  const m = /(\d+)-(\d+)-(\d+)[T ](\d+):(\d+)/.exec(str || '');
+  if(!m) return new Date(str);
+  return new Date(Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5]) - offsetMs);
+}
+function wapiHourMs(h){
+  return h.time_epoch ? h.time_epoch*1000 : new Date(h.time.replace(' ', 'T')).getTime();
+}
+function validTz(tz){
+  if(!tz) return null;
+  try{ new Intl.DateTimeFormat('en', {timeZone: tz}); return tz; }catch(e){ return null; }
+}
+function tzOpts(o){ return LOCATION_TZ ? {...o, timeZone: LOCATION_TZ} : o; }
+function locationHour(date){
+  try{
+    return parseInt(new Intl.DateTimeFormat('en-GB', tzOpts({hour:'2-digit', hour12:false})).format(date), 10) % 24;
+  }catch(e){ return date.getHours(); }
+}
+
 // Astro times come back as e.g. "05:47 AM" — anchor them to the forecast day's
 // calendar date and hand back an ISO string so the rest of the app (which expects
 // `new Date(...)`-able sunrise/sunset values) doesn't need to know the source format.
-function parseAstroTime(dateStr, timeStr){
+function parseAstroTime(dateStr, timeStr, offsetMs){
   const m = /(\d+):(\d+)\s?(AM|PM)/i.exec(timeStr || '');
   if(!m) return null;
   let hh = parseInt(m[1], 10), mm = parseInt(m[2], 10);
   if(/pm/i.test(m[3]) && hh !== 12) hh += 12;
   if(/am/i.test(m[3]) && hh === 12) hh = 0;
-  const d = new Date(dateStr + 'T00:00:00');
-  d.setHours(hh, mm, 0, 0);
-  return d.toISOString();
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, mo-1, d, hh, mm) - (offsetMs || 0)).toISOString();
 }
-function buildDailyFromWapi(wapiJson){
+function buildDailyFromWapi(wapiJson, offsetMs){
   const days = wapiJson.forecast?.forecastday || [];
   if(!days.length) return null;
   const time = [], sunrise = [], sunset = [];
   days.forEach(d => {
     time.push(d.date);
-    sunrise.push(parseAstroTime(d.date, d.astro?.sunrise));
-    sunset.push(parseAstroTime(d.date, d.astro?.sunset));
+    sunrise.push(parseAstroTime(d.date, d.astro?.sunrise, offsetMs));
+    sunset.push(parseAstroTime(d.date, d.astro?.sunset, offsetMs));
   });
   return {time, sunrise, sunset};
 }
@@ -534,15 +598,16 @@ async function fetchProviders(lat, lon){
     soft(fetchOWM(lat, lon)), fetchWeatherAPI(lat, lon), soft(fetchMeteosource(lat, lon)),
     soft(fetchVisualCrossing(lat, lon)), soft(fetchTomorrow(lat, lon))
   ]);
+  const info = locationInfo(wapiJson);
   const wapiHours = [];
   (wapiJson.forecast?.forecastday || []).forEach(day => wapiHours.push(...(day.hour || [])));
   const now = new Date();
   const windowHours = wapiHours
-    .filter(h => new Date(h.time.replace(' ', 'T')) > new Date(now.getTime() - 60*60*1000))
+    .filter(h => wapiHourMs(h) > now.getTime() - 60*60*1000)
     .slice(0, 48);
 
   const owmLookup = buildNearestLookup(owmJson?.list || [], e => new Date(e.dt*1000));
-  const msLookup = buildNearestLookup(msJson ? normalizeMeteosource(msJson) : [], it => it.date);
+  const msLookup = buildNearestLookup(msJson ? normalizeMeteosource(msJson, info.offsetMs) : [], it => it.date);
   const tioLookup = buildNearestLookup(tioJson ? normalizeTomorrow(tioJson) : [], it => it.date);
   const vcLookup = buildNearestLookup(vcJson ? normalizeVisualCrossing(vcJson) : [], it => it.date);
 
@@ -553,7 +618,7 @@ async function fetchProviders(lat, lon){
   PROVIDERS.forEach(p => FIELDS.forEach(f => { series[`${f}_${p.key}`] = []; }));
 
   windowHours.forEach(h => {
-    const t = new Date(h.time.replace(' ', 'T'));
+    const t = new Date(wapiHourMs(h));
     time.push(t.toISOString());
 
     const o = owmLookup(t);
@@ -627,7 +692,7 @@ async function fetchProviders(lat, lon){
     series.thunder_tio.push(tv ? (tv.thunder ? 1 : 0) : null);
   });
 
-  return {hourly: {time, ...series}, daily: buildDailyFromWapi(wapiJson)};
+  return {hourly: {time, ...series}, daily: buildDailyFromWapi(wapiJson, info.offsetMs), tz: info.tz};
 }
 
 // 5-day outlook: grouped from OpenWeatherMap's 5-day/3-hour feed (its native use case),
@@ -637,7 +702,9 @@ async function fetchFiveDayOverview(lat, lon){
   // high/low/rain%/thunder flag per local calendar date, then we take the WeatherAPI-weighted consensus across
   // whichever providers actually cover that date. Free-plan limits mean far-out days can
   // have fewer sources (WeatherAPI caps at 3 days), so each day records how many it used.
-  const localKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  // Date keys are the LOCATION's calendar dates (offset taken from WeatherAPI once it answers).
+  let offsetMs = -new Date().getTimezoneOffset()*60000;
+  const localKey = d => new Date(d.getTime() + offsetMs).toISOString().slice(0,10);
   const byDate = {}; // date -> {hi:{}, lo:{}, rain:{}, thunder:{}}
   const slot = k => (byDate[k] = byDate[k] || {hi:{}, lo:{}, rain:{}, thunder:{}});
 
@@ -648,6 +715,7 @@ async function fetchFiveDayOverview(lat, lon){
     fetchMeteosourceDaily(lat, lon),
     fetchTomorrow(lat, lon)
   ]);
+  if(wapiR.status === 'fulfilled') offsetMs = locationInfo(wapiR.value).offsetMs;
   if([owmR, wapiR, vcR, msR, tioR].every(r => r.status !== 'fulfilled')){
     throw new Error('No provider returned a daily forecast');
   }
@@ -720,16 +788,21 @@ async function fetchFiveDayOverview(lat, lon){
   return {daily: {time, temperature_2m_max:tmax, temperature_2m_min:tmin, precipitation_probability_max:rain, thunder, sources}};
 }
 async function fetchVisualCrossingDaily(lat, lon){
-  const url = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/${lat},${lon}/next5days?unitGroup=metric&include=days&key=${getApiKey('visualcrossing')}&contentType=json`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('Visual Crossing error ' + res.status);
-  return res.json();
+  return cachedFetch(cacheKey('vc-daily', lat, lon), API_TTL, async () => {
+    const now = Date.now(), day = 86400000;
+    const url = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/${lat},${lon}/${isoDay(now-day)}/${isoDay(now+6*day)}?unitGroup=metric&include=days&key=${getApiKey('visualcrossing')}&contentType=json`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('Visual Crossing error ' + res.status);
+    return res.json();
+  });
 }
 async function fetchMeteosourceDaily(lat, lon){
-  const url = `https://www.meteosource.com/api/v1/free/point?lat=${lat}&lon=${lon}&sections=daily&language=en&units=metric&key=${getApiKey('meteosource')}`;
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('Meteosource error ' + res.status);
-  return res.json();
+  return cachedFetch(cacheKey('ms-daily', lat, lon), API_TTL, async () => {
+    const url = `https://www.meteosource.com/api/v1/free/point?lat=${lat}&lon=${lon}&sections=daily&language=en&units=metric&key=${getApiKey('meteosource')}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('Meteosource error ' + res.status);
+    return res.json();
+  });
 }
 
 // Air quality via OpenWeatherMap's Air Pollution API. Still runs PM2.5 through the
@@ -743,17 +816,20 @@ async function fetchAirQuality(lat, lon){
 }
 
 function pm25ToAQI(pm){
-  // EPA breakpoint table (2024 revision uses similar breakpoints for PM2.5 in µg/m³)
+  // EPA breakpoint table. EPA truncates concentrations to 0.1, and the brackets have 0.1 gaps
+  // (9.0 -> 9.1, 35.4 -> 35.5, ...), so match on the upper bound instead of falling through to 0.
   const bp = [
     [0.0,9.0,0,50],[9.1,35.4,51,100],[35.5,55.4,101,150],
     [55.5,125.4,151,200],[125.5,225.4,201,300],[225.5,500.4,301,500]
   ];
+  if(pm === null || pm === undefined || isNaN(pm) || pm < 0) return 0;
+  const c = Math.floor(pm*10)/10;
   for(const [cLo,cHi,aLo,aHi] of bp){
-    if(pm >= cLo && pm <= cHi){
-      return Math.round(((aHi-aLo)/(cHi-cLo)) * (pm-cLo) + aLo);
+    if(c <= cHi){
+      return Math.round(((aHi-aLo)/(cHi-cLo)) * (Math.max(c,cLo)-cLo) + aLo);
     }
   }
-  return pm > 500 ? 500 : 0;
+  return 500;
 }
 function aqiCategory(aqi){
   if(aqi <= 50) return {label:'Good', color:'var(--good)'};
@@ -766,24 +842,43 @@ function aqiCategory(aqi){
 // Lightweight single-provider lookup for the trip planner and micro-grid, where full
 // multi-provider consensus isn't needed — just a fast, real per-point forecast.
 async function fetchSimple(lat, lon){
-  const json = await fetchWeatherAPI(lat, lon, 1);
+  // Lightweight lookup for the trip planner and micro-grid, sharing the cached 3-day WeatherAPI
+  // response (so "in 5 hours" never runs off the end of today's data). Times are real epoch
+  // instants, so the "current hour" is right for locations in other timezones.
+  const json = await fetchWeatherAPI(lat, lon);
   const hours = [];
   (json.forecast?.forecastday || []).forEach(d => hours.push(...(d.hour || [])));
   return {
     hourly: {
-      time: hours.map(h => h.time.replace(' ', 'T')),
+      time: hours.map(h => new Date(wapiHourMs(h)).toISOString()),
       temperature_2m: hours.map(h => h.temp_c),
-      precipitation_probability: hours.map(h => h.chance_of_rain),
+      precipitation_probability: hours.map(h => h.chance_of_rain ?? null),
       cloud_cover: hours.map(h => h.cloud)
     }
   };
 }
+// Nominatim's usage policy forbids client-side search-as-you-type autocomplete and asks for at most
+// one request per second. So place lookups only happen on an explicit action (Enter or the Find
+// button), are spaced >= 1.1s apart, and repeated queries are answered from memory.
+const NOMINATIM_CACHE = {};
+let nominatimNextSlot = 0;
+async function nominatimQuery(q, limit){
+  const key = `${limit}|${q.toLowerCase()}`;
+  if(NOMINATIM_CACHE[key]) return NOMINATIM_CACHE[key];
+  const slot = Math.max(Date.now(), nominatimNextSlot);
+  nominatimNextSlot = slot + 1100;
+  if(slot > Date.now()) await new Promise(r => setTimeout(r, slot - Date.now()));
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=${limit}&addressdetails=1`;
+  const res = await fetch(url, {headers:{'Accept':'application/json'}});
+  if(!res.ok) throw new Error('Place search is unavailable right now (' + res.status + ')');
+  const j = await res.json();
+  NOMINATIM_CACHE[key] = j;
+  return j;
+}
 async function geocodeCity(name){
   // Nominatim (OpenStreetMap) has far better coverage of small localities/barangays
   // than either weather provider's basic geocoder.
-  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(name)}&limit=1&addressdetails=1`;
-  const res = await fetch(url, {headers:{'Accept':'application/json'}});
-  const j = await res.json();
+  const j = await nominatimQuery(name, 1);
   if(!j || !j.length) throw new Error(`"${name}" not found. Try adding the city/province (e.g. "Libertad, Pasay City"), or just click the map instead — it's always exact.`);
   const r = j[0];
   const parts = r.display_name.split(',').map(s=>s.trim());
@@ -853,6 +948,7 @@ function buildFineNowcast(hourlyProviders, startIdx){
         temp, cloud,
         agreement: computeAgreement(precip, i, precipProb, hourEnv(hourlyProviders, i)),
         thunderPct: thunderAgreementPct(PROVIDERS.map(m => thunder[m.key][i])),
+        hourIdx: i,
         precipMm: (hourlyPrecip[i] ?? 0) / 4
       });
     }
@@ -908,6 +1004,7 @@ function buildFineRainByProvider(hourlyProviders, startIdx){
 // Populated per-location from WeatherAPI's daily astro sunrise/sunset — real astronomical
 // times, not a guessed 6am-6pm window. Falls back to the guess only if unavailable.
 let SUN_TIMES = [];
+let LOCATION_TZ = null; // IANA tz of the forecast location (from WeatherAPI), used for labels
 
 // ===== SVG gauge builders for the Pixel-style widget tiles =====
 
@@ -918,6 +1015,9 @@ function svgArc(cx, cy, r, startAngle, endAngle){
   return `M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`;
 }
 
+// Length of the 240-degree gauge arc (radius 34) — the coloured fill must be a fraction of THIS,
+// not an arbitrary number, or it runs ahead of the needle.
+const GAUGE_ARC_LEN = (240/360) * 2 * Math.PI * 34;
 function uvGaugeSVG(uv){
   const v = uv === null || uv === undefined ? 0 : Math.max(0, Math.min(11, uv));
   const frac = v/11;
@@ -928,7 +1028,7 @@ function uvGaugeSVG(uv){
   return `<svg width="88" height="60" viewBox="0 0 88 60">
     <path d="${svgArc(cx,cy,r,-210,30)}" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="7" stroke-linecap="round"/>
     <path d="${svgArc(cx,cy,r,-210,30)}" fill="none" stroke="url(#uvGrad)" stroke-width="7" stroke-linecap="round"
-      stroke-dasharray="${frac*160} 160"/>
+      stroke-dasharray="${frac*GAUGE_ARC_LEN} ${GAUGE_ARC_LEN}"/>
     <circle cx="${needleX}" cy="${needleY}" r="4" fill="#fff"/>
     <defs><linearGradient id="uvGrad" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#2ecc71"/><stop offset="40%" stop-color="#f5d742"/>
@@ -959,7 +1059,7 @@ function realFeelGaugeSVG(temp){
   return `<svg width="88" height="60" viewBox="0 0 88 60">
     <path d="${svgArc(cx,cy,r,-210,30)}" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="7" stroke-linecap="round"/>
     <path d="${svgArc(cx,cy,r,-210,30)}" fill="none" stroke="url(#feelGrad)" stroke-width="7" stroke-linecap="round"
-      stroke-dasharray="${frac*160} 160"/>
+      stroke-dasharray="${frac*GAUGE_ARC_LEN} ${GAUGE_ARC_LEN}"/>
     <circle cx="${needleX}" cy="${needleY}" r="4" fill="#fff"/>
     <defs><linearGradient id="feelGrad" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#4da3ff"/><stop offset="50%" stop-color="#2ecc71"/><stop offset="100%" stop-color="#ff5d5d"/>
@@ -1010,7 +1110,7 @@ function pressureGaugeSVG(hpa){
   return `<svg width="88" height="60" viewBox="0 0 88 60">
     <path d="${svgArc(cx,cy,r,-210,30)}" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="7" stroke-linecap="round"/>
     <path d="${svgArc(cx,cy,r,-210,30)}" fill="none" stroke="#4da3ff" stroke-width="7" stroke-linecap="round"
-      stroke-dasharray="${frac*160} 160"/>
+      stroke-dasharray="${frac*GAUGE_ARC_LEN} ${GAUGE_ARC_LEN}"/>
     <circle cx="${needleX}" cy="${needleY}" r="4" fill="#fff"/>
   </svg>`;
 }
@@ -1116,13 +1216,17 @@ function heroIconIdFor(icon, isDay, text){
 }
 
 function isDaytime(date){
-  const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
-  const entry = SUN_TIMES.find(s => {
-    const sd = s.sunrise;
-    return sd.getFullYear() === y && sd.getMonth() === m && sd.getDate() === d;
-  });
-  if(!entry) return date.getHours() >= 6 && date.getHours() < 18; // fallback if data missing
-  return date >= entry.sunrise && date < entry.sunset;
+  const t = date.getTime();
+  if(!isNaN(t)){
+    // Match the sunrise/sunset pair whose surrounding window contains this instant. Working in
+    // absolute time (not the viewer's calendar date) keeps day/night right for other timezones.
+    const H6 = 6*3600e3;
+    const entry = SUN_TIMES.find(e => e.sunrise && e.sunset && t >= e.sunrise.getTime() - H6 && t < e.sunset.getTime() + H6);
+    if(entry) return t >= entry.sunrise.getTime() && t < entry.sunset.getTime();
+    const h = locationHour(date);
+    return h >= 6 && h < 18; // fallback if sun data is missing
+  }
+  return true;
 }
 
 // Full sky-condition classifier: rain intensity (from real forecast amounts) layered
@@ -1267,7 +1371,7 @@ function groupFinePointsByHour(finePoints){
   const hourGroups = [];
   finePoints.forEach((p, idx) => {
     const d = new Date(p.time);
-    const hourKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}-${d.getHours()}`;
+    const hourKey = p.hourIdx !== undefined ? `h${p.hourIdx}` : `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}-${d.getHours()}`;
     let grp = hourGroups.find(g => g.key === hourKey);
     if(!grp){ grp = {key:hourKey, points:[], firstIdx:idx}; hourGroups.push(grp); }
     grp.points.push(p);
@@ -1306,7 +1410,7 @@ function toggleDetailsPanel(forceOpen){
   const shouldOpen = forceOpen !== undefined ? forceOpen : !panel.classList.contains('open');
   panel.classList.toggle('open', shouldOpen);
   btn.setAttribute('aria-expanded', String(shouldOpen));
-  btn.textContent = shouldOpen ? 'Hide per-minute breakdown ▴' : 'Show per-minute breakdown ▾';
+  btn.innerHTML = shouldOpen ? 'Hide 15-minute details <span>↑</span>' : 'Show 15-minute details <span>↓</span>';
 }
 
 // The generic "Show 15-minute details" button (as opposed to clicking a specific
@@ -1442,7 +1546,7 @@ function toggleChunk(id){
 
 function fmtHour(iso){
   const d = new Date(iso);
-  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  return d.toLocaleTimeString([], tzOpts({hour:'2-digit', minute:'2-digit'}));
 }
 
 // For endpoints using a single blended model (grid points, trip checker) where we only
@@ -1510,49 +1614,34 @@ function useMyLocation(){
   );
 }
 
-function useManualCoords(){
-  const errEl = document.getElementById('coordsErr');
-  const latEl = document.getElementById('manualLat');
-  const lonEl = document.getElementById('manualLon');
-  if(!errEl || !latEl || !lonEl){
-    statusEl.textContent = 'Manual coordinates are not part of this interface. Click the map or search for a place instead.';
-    return;
-  }
-  errEl.textContent = '';
-  const lat = parseFloat(latEl.value);
-  const lon = parseFloat(lonEl.value);
-  if(isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180){
-    errEl.textContent = 'Please enter valid numbers (latitude -90 to 90, longitude -180 to 180).';
-    return;
-  }
-  statusEl.style.display = 'block';
-  statusEl.textContent = `Using (${lat}, ${lon}). Fetching forecasts…`;
-  if(map) map.setView([lat, lon], 13);
-  runForLocation(lat, lon, `${lat.toFixed(4)}, ${lon.toFixed(4)}`);
-}
 
 let suggestDebounce = null;
 let lastSuggestions = [];
 
 function onCityInput(){
-  clearTimeout(suggestDebounce);
+  // Typing no longer fires lookups (see nominatimQuery); it just hides stale suggestions.
+  const box = document.getElementById('citySuggestions');
+  box.style.display = 'none'; box.innerHTML = '';
+}
+function onCityKey(e){
+  if(e.key !== 'Enter') return;
+  e.preventDefault();
+  suggestCity();
+}
+async function suggestCity(){
   const val = document.getElementById('manualCity').value.trim();
   const box = document.getElementById('citySuggestions');
   if(val.length < 3){ box.style.display = 'none'; box.innerHTML = ''; return; }
-  suggestDebounce = setTimeout(async () => {
-    try{
-      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(val)}&limit=6&addressdetails=1`;
-      const res = await fetch(url, {headers:{'Accept':'application/json'}});
-      const j = await res.json();
-      if(!j.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
-      lastSuggestions = j;
-      box.innerHTML = j.map((r,i) => {
-        const short = escapeHtml(r.display_name.split(',').map(s=>s.trim()).slice(0,3).join(', '));
-        return `<div class="suggestion-item" onmousedown="selectSuggestionByIndex(${i})">${short}</div>`;
-      }).join('');
-      box.style.display = 'block';
-    }catch(e){ box.style.display = 'none'; }
-  }, 400);
+  try{
+    const j = await nominatimQuery(val, 6);
+    if(!j.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
+    lastSuggestions = j;
+    box.innerHTML = j.map((r,i) => {
+      const short = escapeHtml(r.display_name.split(',').map(s=>s.trim()).slice(0,3).join(', '));
+      return `<div class="suggestion-item" onmousedown="selectSuggestionByIndex(${i})">${short}</div>`;
+    }).join('');
+    box.style.display = 'block';
+  }catch(e){ box.style.display = 'none'; }
 }
 
 function hideSuggestionsDelayed(){
@@ -1862,30 +1951,33 @@ let tripSuggestDebounce = {};
 let tripLastSuggestions = {};
 
 function onTripInput(which){
-  const inputId = which === 'from' ? 'tripFrom' : 'tripTo';
-  const boxId = which === 'from' ? 'tripFromSuggestions' : 'tripToSuggestions';
-  const input = document.getElementById(inputId);
+  const input = document.getElementById(which === 'from' ? 'tripFrom' : 'tripTo');
+  const box = document.getElementById(which === 'from' ? 'tripFromSuggestions' : 'tripToSuggestions');
   // typing invalidates any previously selected exact coordinates from a prior suggestion/map click
   delete input.dataset.lat;
   delete input.dataset.lon;
-  clearTimeout(tripSuggestDebounce[which]);
+  box.style.display = 'none'; box.innerHTML = '';
+}
+function onTripKey(e, which){
+  if(e.key !== 'Enter') return;
+  e.preventDefault();
+  suggestTrip(which);
+}
+async function suggestTrip(which){
+  const input = document.getElementById(which === 'from' ? 'tripFrom' : 'tripTo');
+  const box = document.getElementById(which === 'from' ? 'tripFromSuggestions' : 'tripToSuggestions');
   const val = input.value.trim();
-  const box = document.getElementById(boxId);
   if(val.length < 3){ box.style.display = 'none'; box.innerHTML = ''; return; }
-  tripSuggestDebounce[which] = setTimeout(async () => {
-    try{
-      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(val)}&limit=6&addressdetails=1`;
-      const res = await fetch(url, {headers:{'Accept':'application/json'}});
-      const j = await res.json();
-      if(!j.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
-      tripLastSuggestions[which] = j;
-      box.innerHTML = j.map((r,i) => {
-        const short = escapeHtml(r.display_name.split(',').map(s=>s.trim()).slice(0,3).join(', '));
-        return `<div class="suggestion-item" onmousedown="selectTripSuggestion('${which}',${i})">${short}</div>`;
-      }).join('');
-      box.style.display = 'block';
-    }catch(e){ box.style.display = 'none'; }
-  }, 400);
+  try{
+    const j = await nominatimQuery(val, 6);
+    if(!j.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
+    tripLastSuggestions[which] = j;
+    box.innerHTML = j.map((r,i) => {
+      const short = escapeHtml(r.display_name.split(',').map(s=>s.trim()).slice(0,3).join(', '));
+      return `<div class="suggestion-item" onmousedown="selectTripSuggestion('${which}',${i})">${short}</div>`;
+    }).join('');
+    box.style.display = 'block';
+  }catch(e){ box.style.display = 'none'; }
 }
 
 function hideTripSuggestionsDelayed(which){
@@ -1941,10 +2033,16 @@ async function checkTrip(){
     const fIdx = currentHourIndex(fromData.hourly.time) + whenHours;
     const tIdx = currentHourIndex(toData.hourly.time) + whenHours;
 
-    const fRain = fromData.hourly.precipitation_probability[fIdx] ?? 0;
+    // No data for that hour (or a provider returned null): say so, never default to 0% rain.
+    if(fromData.hourly.time[fIdx] === undefined || toData.hourly.time[tIdx] === undefined ||
+       fromData.hourly.precipitation_probability[fIdx] == null || toData.hourly.precipitation_probability[tIdx] == null){
+      resultEl.innerHTML = '<span class="err">No forecast data is available for that departure time yet — try an earlier time.</span>';
+      return;
+    }
+    const fRain = fromData.hourly.precipitation_probability[fIdx];
     const fTemp = fromData.hourly.temperature_2m[fIdx];
     const fCloud = fromData.hourly.cloud_cover ? fromData.hourly.cloud_cover[fIdx] : null;
-    const tRain = toData.hourly.precipitation_probability[tIdx] ?? 0;
+    const tRain = toData.hourly.precipitation_probability[tIdx];
     const tTemp = toData.hourly.temperature_2m[tIdx];
     const tCloud = toData.hourly.cloud_cover ? toData.hourly.cloud_cover[tIdx] : null;
 
@@ -2045,11 +2143,13 @@ function loadFiveDay(lat, lon){
   });
 }
 
-async function runForLocation(lat, lon, label){
+async function runForLocation(lat, lon, label, opts = {}){
+  const silent = !!opts.silent; // background refresh: no skeleton flash, and errors leave the screen alone
   CURRENT = {lat, lon, label};
-  showLoadingSkeleton();
+  if(!silent) showLoadingSkeleton();
   try{
     const data = await fetchProviders(lat, lon);
+    LOCATION_TZ = validTz(data.tz);
     const hourly = data.hourly;
     if(data.daily && data.daily.sunrise && data.daily.sunset){
       SUN_TIMES = data.daily.time.map((t, i) => ({
@@ -2267,7 +2367,7 @@ async function runForLocation(lat, lon, label){
     // from their hourly values — see buildFineRainByProvider), so you can see exactly which
     // source is driving the consensus number instead of only the blended white line.
     const fineRain = buildFineRainByProvider(hourly, startIdx);
-    const rainLabels = fineRain.labels.map(t => new Date(t).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}));
+    const rainLabels = fineRain.labels.map(t => new Date(t).toLocaleTimeString([], tzOpts({hour:'numeric', minute:'2-digit'})));
     const rainDatasets = PROVIDERS.map(m => ({
       label: m.name,
       data: fineRain.series[m.key],
@@ -2363,7 +2463,7 @@ async function runForLocation(lat, lon, label){
     feelsDatasets.push({label:'Consensus', data:feelsConsensusData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
     renderProviderChart('feelsChart', 'feelsChartLegend', chartLabels, feelsDatasets, {suffix:'°', decimals:1});
     document.getElementById('feelsChartNote').innerHTML =
-      `Each provider's own "feels like" temperature (their heat-index/wind-chill calculation, not ours). None of these four providers publish a separate "in the shade" variant the way AccuWeather's RealFeel Shade does, so that specific figure isn't something we can show honestly here — this is each provider's one general feels-like number.`;
+      `Each provider's own "feels like" temperature (their heat-index/wind-chill calculation, not ours). None of these providers publish a separate "in the shade" variant the way AccuWeather's RealFeel Shade does, so that specific figure isn't something we can show honestly here — this is each provider's one general feels-like number.`;
 
     // UV index, per provider — also called out as each provider's forecast peak for today
     const uvDatasets = PROVIDERS.map(m => ({
@@ -2399,8 +2499,11 @@ async function runForLocation(lat, lon, label){
     updateLastUpdatedLabel();
   }catch(err){
     console.error(err);
+    if(silent) return;
     const cache = loadForecastCache();
-    if(cache){
+    // Only show cached conditions if they're for (about) the same place — never another location's.
+    const sameSpot = cache && Math.abs(cache.lat - lat) < 0.05 && Math.abs(cache.lon - lon) < 0.05;
+    if(sameSpot){
       renderStaleForecast(cache, lat, lon, label, err);
       return;
     }

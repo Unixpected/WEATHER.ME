@@ -112,3 +112,7 @@ input.err-field{border-color:var(--bad);box-shadow:0 0 0 3px rgba(255,111,125,.1
    card height unevenly across a row of cards */
 .hero-intro p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
 .insight-item .ii-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+
+.trip-verdict{display:flex;align-items:center;gap:10px;padding:14px 16px;margin-bottom:12px;border-radius:14px;font-weight:800;font-size:15px;border:1px solid var(--line)}
+.trip-verdict.yes{background:rgba(255,111,125,.08);border-color:rgba(255,111,125,.25);color:var(--bad)}
+.trip-verdict.no{background:rgba(98,223,155,.08);border-color:rgba(98,223,155,.22);color:var(--good)}

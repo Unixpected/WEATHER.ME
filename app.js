@@ -218,6 +218,7 @@ const PROVIDERS = [
   {key:'wapi', name:'WeatherAPI.com', color:'#2ecc71'},
   {key:'ms', name:'Meteosource', color:'#f5b942'},
   {key:'vc', name:'Visual Crossing', color:'#c07bff'},
+  {key:'tio', name:'Tomorrow.io', color:'#ff6b6b'},
 ];
 
 function median(arr){
@@ -329,7 +330,8 @@ const DEFAULT_API_KEYS = {
   owm: '3f6499c1073e6554d41b995facf9741b',
   weatherapi: '16dbd0fef6d0408885d30629262609',
   meteosource: '4uslnx6d1gyq7brc3nyszx83rnmgsh5a5193m52u',
-  visualcrossing: 'TTQGL824XMK5WKTJHLLLJBSBF'
+  visualcrossing: 'TTQGL824XMK5WKTJHLLLJBSBF',
+  tomorrow: 'fCLxq5MTwVdBQRnr37BlQuNDthKDC2j9'
 };
 function getApiKey(provider){
   try{
@@ -453,11 +455,52 @@ function buildDailyFromWapi(wapiJson){
 // true hourly steps, so that's used as the base grid; OpenWeatherMap's 3-hour steps
 // are snapped to whichever hour they're closest to (its own docs describe this as
 // the intended way to read the 5-day/3-hour feed at finer-than-3-hour resolution).
-async function fetchProviders(lat, lon){
-  const [owmJson, wapiJson, msJson, vcJson] = await Promise.all([
-    fetchOWM(lat, lon), fetchWeatherAPI(lat, lon), fetchMeteosource(lat, lon), fetchVisualCrossing(lat, lon)
-  ]);
+// Tomorrow.io: one request returns both the hourly and daily timelines, and its free plan
+// is tightly rate-limited (about 25 calls/hour), so the response is cached per location for
+// 10 minutes and shared by the hourly consensus and the 5-day outlook.
+const TOMORROW_CACHE = {};
+function fetchTomorrow(lat, lon){
+  const k = `${(+lat).toFixed(2)},${(+lon).toFixed(2)}`;
+  const hit = TOMORROW_CACHE[k];
+  if(hit && Date.now() - hit.t < 10*60*1000) return hit.promise;
+  const url = `https://api.tomorrow.io/v4/weather/forecast?location=${lat},${lon}&timesteps=1h,1d&units=metric&apikey=${getApiKey('tomorrow')}`;
+  const promise = fetch(url).then(res => {
+    if(!res.ok) throw new Error('Tomorrow.io error ' + res.status);
+    return res.json();
+  });
+  TOMORROW_CACHE[k] = {t: Date.now(), promise};
+  promise.catch(() => { delete TOMORROW_CACHE[k]; }); // don't cache failures (e.g. a 429)
+  return promise;
+}
+function normalizeTomorrow(json){
+  return (json?.timelines?.hourly || []).map(h => {
+    const v = h.values || {};
+    return {
+      date: new Date(h.time),
+      temp: v.temperature ?? null,
+      precip: v.rainIntensity ?? v.precipitationIntensity ?? 0,
+      precipProb: v.precipitationProbability ?? null,
+      wind: v.windSpeed != null ? v.windSpeed*3.6 : null, // m/s -> km/h
+      windDir: v.windDirection ?? null,
+      cloud: v.cloudCover ?? null,
+      humidity: v.humidity ?? null,
+      pressure: v.pressureSeaLevel ?? v.pressureSurfaceLevel ?? null,
+      feels: v.temperatureApparent ?? v.temperature ?? null,
+      uv: v.uvIndex ?? null,
+      thunder: v.weatherCode === 8000 // Tomorrow.io weather code 8000 = Thunderstorm
+    };
+  });
+}
 
+async function fetchProviders(lat, lon){
+  // WeatherAPI.com supplies the base hourly grid, so it's required. Every other provider is
+  // optional: if one fails (bad key, rate limit, network), it's skipped instead of taking the
+  // whole forecast down, and the consensus re-normalizes over whoever answered.
+  const soft = p => p.catch(e => { console.warn('Provider skipped:', e.message); return null; });
+  const [owmJson, wapiJson, msJson, vcJson, tioJson] = await Promise.all([
+    soft(fetchOWM(lat, lon)), fetchWeatherAPI(lat, lon), soft(fetchMeteosource(lat, lon)),
+    soft(fetchVisualCrossing(lat, lon)), soft(fetchTomorrow(lat, lon))
+  ]);
   const wapiHours = [];
   (wapiJson.forecast?.forecastday || []).forEach(day => wapiHours.push(...(day.hour || [])));
   const now = new Date();
@@ -465,9 +508,10 @@ async function fetchProviders(lat, lon){
     .filter(h => new Date(h.time.replace(' ', 'T')) > new Date(now.getTime() - 60*60*1000))
     .slice(0, 48);
 
-  const owmLookup = buildNearestLookup(owmJson.list || [], e => new Date(e.dt*1000));
-  const msLookup = buildNearestLookup(normalizeMeteosource(msJson), it => it.date);
-  const vcLookup = buildNearestLookup(normalizeVisualCrossing(vcJson), it => it.date);
+  const owmLookup = buildNearestLookup(owmJson?.list || [], e => new Date(e.dt*1000));
+  const msLookup = buildNearestLookup(msJson ? normalizeMeteosource(msJson) : [], it => it.date);
+  const tioLookup = buildNearestLookup(tioJson ? normalizeTomorrow(tioJson) : [], it => it.date);
+  const vcLookup = buildNearestLookup(vcJson ? normalizeVisualCrossing(vcJson) : [], it => it.date);
 
   const FIELDS = ['temperature_2m','precipitation','precip_probability','wind_speed_10m','wind_direction_10m',
     'cloud_cover','relative_humidity_2m','pressure_msl','apparent_temperature','uv_index','thunder'];
@@ -535,6 +579,19 @@ async function fetchProviders(lat, lon){
     series.uv_index_vc.push(v ? v.uv : null);
     series.precip_probability_vc.push(v ? v.precipProb : null);
     series.thunder_vc.push(v ? (/thunder/i.test(v.weatherText||'') ? 1 : 0) : null);
+
+    const tv = tioLookup(t);
+    series.temperature_2m_tio.push(tv ? tv.temp : null);
+    series.precipitation_tio.push(tv ? tv.precip : null);
+    series.precip_probability_tio.push(tv ? tv.precipProb : null);
+    series.wind_speed_10m_tio.push(tv ? tv.wind : null);
+    series.wind_direction_10m_tio.push(tv ? tv.windDir : null);
+    series.cloud_cover_tio.push(tv ? tv.cloud : null);
+    series.relative_humidity_2m_tio.push(tv ? tv.humidity : null);
+    series.pressure_msl_tio.push(tv ? tv.pressure : null);
+    series.apparent_temperature_tio.push(tv ? tv.feels : null);
+    series.uv_index_tio.push(tv ? tv.uv : null);
+    series.thunder_tio.push(tv ? (tv.thunder ? 1 : 0) : null);
   });
 
   return {hourly: {time, ...series}, daily: buildDailyFromWapi(wapiJson)};
@@ -551,13 +608,14 @@ async function fetchFiveDayOverview(lat, lon){
   const byDate = {}; // date -> {hi:{}, lo:{}, rain:{}, thunder:{}}
   const slot = k => (byDate[k] = byDate[k] || {hi:{}, lo:{}, rain:{}, thunder:{}});
 
-  const [owmR, wapiR, vcR, msR] = await Promise.allSettled([
+  const [owmR, wapiR, vcR, msR, tioR] = await Promise.allSettled([
     fetchOWM(lat, lon),
     fetchWeatherAPI(lat, lon, 3),
     fetchVisualCrossingDaily(lat, lon),
-    fetchMeteosourceDaily(lat, lon)
+    fetchMeteosourceDaily(lat, lon),
+    fetchTomorrow(lat, lon)
   ]);
-  if(owmR.status !== 'fulfilled' && wapiR.status !== 'fulfilled' && vcR.status !== 'fulfilled' && msR.status !== 'fulfilled'){
+  if([owmR, wapiR, vcR, msR, tioR].every(r => r.status !== 'fulfilled')){
     throw new Error('No provider returned a daily forecast');
   }
 
@@ -600,6 +658,17 @@ async function fetchFiveDayOverview(lat, lon){
       s.hi.ms = a.temperature_max; s.lo.ms = a.temperature_min;
       s.rain.ms = (a.precipitation?.total ?? 0) >= 1 ? 100 : 0;
       s.thunder.ms = /thunder/i.test(`${d.weather ?? ''} ${d.summary ?? ''}`) ? 1 : 0;
+    });
+  }
+
+  // Tomorrow.io: daily timeline from the same (cached) request as the hourly data.
+  if(tioR.status === 'fulfilled'){
+    (tioR.value.timelines?.daily || []).forEach(d => {
+      const v = d.values || {};
+      const s = slot(localKey(new Date(d.time)));
+      s.hi.tio = v.temperatureMax ?? v.temperatureAvg; s.lo.tio = v.temperatureMin ?? v.temperatureAvg;
+      s.rain.tio = v.precipitationProbabilityMax ?? v.precipitationProbabilityAvg ?? 0;
+      s.thunder.tio = v.weatherCodeMax === 8000 ? 1 : 0;
     });
   }
 

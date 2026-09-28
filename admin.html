@@ -45,7 +45,7 @@
 
   <section class="card-surface admin-card">
     <h2>Weather provider API keys</h2>
-    <p class="hint">Used for every forecast fetch — OpenWeatherMap for the 5-day outlook + air quality, and OpenWeatherMap, WeatherAPI.com, Meteosource and Visual Crossing together for the hourly provider consensus. Leave a field blank and save to fall back to the app's built-in default for that provider.</p>
+    <p class="hint">Used for every forecast fetch — OpenWeatherMap for the 5-day outlook + air quality, and OpenWeatherMap, WeatherAPI.com, Meteosource, Visual Crossing and Tomorrow.io together for the hourly provider consensus. Leave a field blank and save to fall back to the app's built-in default for that provider.</p>
 
     <div class="field-row">
       <label>OpenWeatherMap API key</label>
@@ -76,6 +76,14 @@
       <div class="key-row">
         <input type="password" id="vcKeyInput" placeholder="Paste your Visual Crossing key">
         <button type="button" class="ghost-btn" onclick="toggleReveal('vcKeyInput')">👁</button>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <label>Tomorrow.io API key</label>
+      <div class="key-row">
+        <input type="password" id="tioKeyInput" placeholder="Paste your Tomorrow.io key">
+        <button type="button" class="ghost-btn" onclick="toggleReveal('tioKeyInput')">👁</button>
       </div>
     </div>
 
@@ -115,6 +123,7 @@ function initKeyFields(){
   document.getElementById('wapiKeyInput').value = stored.weatherapi || '';
   document.getElementById('msKeyInput').value = stored.meteosource || '';
   document.getElementById('vcKeyInput').value = stored.visualcrossing || '';
+  document.getElementById('tioKeyInput').value = stored.tomorrow || '';
 }
 function toggleReveal(id){
   const el = document.getElementById(id);
@@ -130,11 +139,13 @@ function saveKeys(){
   const weatherapi = document.getElementById('wapiKeyInput').value.trim();
   const meteosource = document.getElementById('msKeyInput').value.trim();
   const visualcrossing = document.getElementById('vcKeyInput').value.trim();
+  const tomorrow = document.getElementById('tioKeyInput').value.trim();
   const toSave = {};
   if(owm) toSave.owm = owm;
   if(weatherapi) toSave.weatherapi = weatherapi;
   if(meteosource) toSave.meteosource = meteosource;
   if(visualcrossing) toSave.visualcrossing = visualcrossing;
+  if(tomorrow) toSave.tomorrow = tomorrow;
   try{
     localStorage.setItem(KEYS_STORAGE, JSON.stringify(toSave));
     flashSaved('keySaveMsg');
@@ -148,6 +159,7 @@ function resetKeys(){
   document.getElementById('wapiKeyInput').value = '';
   document.getElementById('msKeyInput').value = '';
   document.getElementById('vcKeyInput').value = '';
+  document.getElementById('tioKeyInput').value = '';
   flashSaved('keySaveMsg');
 }
 

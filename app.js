@@ -228,16 +228,17 @@ function median(arr){
   return a.length % 2 ? a[mid] : (a[mid-1]+a[mid])/2;
 }
 
-// --- Weighted consensus: our computations lean ~75% toward WeatherAPI.com, with the other
-// providers sharing the remaining 25% equally. This is a weighted MEAN (a weighted median
-// would just collapse to WeatherAPI whenever it has a value). If a provider has no value
-// for a given hour/day, the weights are re-normalized over whoever does, so a gap never
-// drags the result toward zero. ---
-const PRIMARY_PROVIDER = 'wapi';
-const PRIMARY_WEIGHT = 0.75;
+// --- Weighted consensus: WeatherAPI.com and Tomorrow.io are trusted most, so each carries
+// 33% of the weight; the other providers share the remaining 34% equally. This is a weighted
+// MEAN (a weighted median would collapse onto one provider). If a provider has no value for a
+// given hour/day, the weights are re-normalized over whoever does, so a gap never drags the
+// result toward zero. ---
+const PRIMARY_PROVIDERS = {wapi: 0.33, tio: 0.33};
 function providerWeight(key){
-  const others = PROVIDERS.length - 1;
-  return key === PRIMARY_PROVIDER ? PRIMARY_WEIGHT : (others > 0 ? (1 - PRIMARY_WEIGHT) / others : 0);
+  if(key in PRIMARY_PROVIDERS) return PRIMARY_PROVIDERS[key];
+  const rest = PROVIDERS.filter(p => !(p.key in PRIMARY_PROVIDERS)).length;
+  const remaining = 1 - Object.values(PRIMARY_PROVIDERS).reduce((a,b)=>a+b,0);
+  return rest > 0 ? remaining / rest : 0;
 }
 function consensusMap(byKey){
   let sum = 0, wsum = 0;
@@ -279,10 +280,42 @@ function providerRainPct(mm, prob){
   if(mm === null || mm === undefined || isNaN(mm)) return null;
   return mm > RAIN_TRACE_THRESHOLD_MM ? 100 : 0;
 }
-function precipAgreementPct(values, probValues){
+// --- Physics-based rain heuristic (an independent sanity check on the providers) ---
+// Rain needs clouds, is favored by moist near-saturated air, low pressure, and a small gap
+// between temperature and dew point. Weights follow the standard rule of thumb: cloud 40%,
+// humidity 30%, pressure 15%, dew-point gap 15%. This is a rough estimate from surface
+// readings, NOT a real Probability of Precipitation (PoP = confidence x area), so it only gets
+// a small say (HEURISTIC_RAIN_WEIGHT) next to the providers' model-based probabilities.
+const HEURISTIC_RAIN_WEIGHT = 0.15;
+const clamp01 = x => Math.max(0, Math.min(1, x));
+function heuristicRainPct(env){
+  if(!env) return null;
+  const {cloud, humidity, pressure, temp} = env;
+  if([cloud, humidity, pressure, temp].some(v => v === null || v === undefined || isNaN(v))) return null;
+  const dewPoint = temp - (100 - humidity)/5;            // simple Magnus-style approximation (RH > ~50%)
+  const gap = temp - dewPoint;                            // 0 = saturated
+  const cloudScore = clamp01((cloud - 30)/70);            // <=30% cloud -> 0, 100% -> 1
+  const humScore   = clamp01((humidity - 60)/30);         // 60% -> 0, 90%+ -> 1
+  const presScore  = clamp01((1013 - pressure)/10);       // 1013 hPa -> 0, <=1003 -> 1
+  const gapScore   = clamp01((6 - gap)/6);                // 0 C gap -> 1, 6 C+ -> 0
+  let raw = 0.40*cloudScore + 0.30*humScore + 0.15*presScore + 0.15*gapScore;
+  if(cloud < 30) raw *= 0.1;                              // clouds are a hard requirement
+  return Math.round(raw*100);
+}
+function blendRainWithHeuristic(pct, h){
+  if(h === null || h === undefined || isNaN(h)) return Math.round(pct);
+  return Math.round(pct*(1 - HEURISTIC_RAIN_WEIGHT) + h*HEURISTIC_RAIN_WEIGHT);
+}
+// Weighted-consensus surface conditions for one hourly index (feeds the heuristic).
+function hourEnv(hourly, idx){
+  const at = f => consensus(PROVIDERS.map(m => hourly[`${f}_${m.key}`]?.[idx]));
+  return {cloud: at('cloud_cover'), humidity: at('relative_humidity_2m'), pressure: at('pressure_msl'), temp: at('temperature_2m')};
+}
+function precipAgreementPct(values, probValues, env){
   const pcts = values.map((mm,i) => providerRainPct(mm, probValues ? probValues[i] : undefined));
   const m = consensus(pcts);
-  return m === null ? null : Math.round(m);
+  if(m === null) return null;
+  return env ? blendRainWithHeuristic(m, heuristicRainPct(env)) : Math.round(m);
 }
 
 // % of providers (that have a condition-code/text field to check) flagging thunderstorm
@@ -296,7 +329,7 @@ function thunderAgreementPct(values){
 
 // Same canonical per-provider % as above, but also names which providers are actually
 // forecasting rain (pct >= 50) for the descriptive "X of Y providers" text.
-function computeAgreement(precip, hourIdx, precipProb){
+function computeAgreement(precip, hourIdx, precipProb, env){
   if(hourIdx < 0) return {pct:null, count:0, total:0, names:[]};
   const infos = PROVIDERS.map(m => ({
     name: m.name,
@@ -306,7 +339,7 @@ function computeAgreement(precip, hourIdx, precipProb){
   if(!valid.length) return {pct:null, count:0, total:0, names:[]};
   const raining = valid.filter(o => o.pct >= 50);
   return {
-    pct: Math.round(consensus(infos.map(o => o.pct))),
+    pct: blendRainWithHeuristic(consensus(infos.map(o => o.pct)), env ? heuristicRainPct(env) : null),
     count: raining.length,
     total: valid.length,
     names: raining.map(o=>o.name)
@@ -818,7 +851,7 @@ function buildFineNowcast(hourlyProviders, startIdx){
       points.push({
         time: t.toISOString(),
         temp, cloud,
-        agreement: computeAgreement(precip, i, precipProb),
+        agreement: computeAgreement(precip, i, precipProb, hourEnv(hourlyProviders, i)),
         thunderPct: thunderAgreementPct(PROVIDERS.map(m => thunder[m.key][i])),
         precipMm: (hourlyPrecip[i] ?? 0) / 4
       });
@@ -846,11 +879,13 @@ function buildFineRainByProvider(hourlyProviders, startIdx){
   const windowEnd = new Date(now.getTime() + 5*60*60*1000);
   const labels = [];
   const series = {};
+  const heur = []; // physics heuristic, interpolated to the same 15-minute steps
   PROVIDERS.forEach(p => { series[p.key] = []; });
 
   for(let i = startIdx; i < times.length - 1; i++){
     const t0 = new Date(times[i]);
     if(t0 > windowEnd) break;
+    const hA = heuristicRainPct(hourEnv(hourlyProviders, i)), hB = heuristicRainPct(hourEnv(hourlyProviders, i+1));
     for(let step = 0; step < 4; step++){
       const t = new Date(t0.getTime() + step*15*60*1000);
       if(t > windowEnd) break;
@@ -858,6 +893,7 @@ function buildFineRainByProvider(hourlyProviders, startIdx){
       if(windowFinish <= now) continue;
       const frac = step/4;
       labels.push(t.toISOString());
+      heur.push(hA !== null && hB !== null ? hA + (hB-hA)*frac : hA);
       PROVIDERS.forEach(p => {
         const a = hourlyPct[p.key][i], b = hourlyPct[p.key][i+1];
         const val = (a !== null && b !== null) ? a + (b-a)*frac : a;
@@ -865,7 +901,7 @@ function buildFineRainByProvider(hourlyProviders, startIdx){
       });
     }
   }
-  return {labels, series};
+  return {labels, series, heur};
 }
 
 
@@ -2003,7 +2039,7 @@ function loadFiveDay(lat, lon){
       </div>`;
     }).join('');
     const minSrc = Math.min(...fd.daily.sources), maxSrc = Math.max(...fd.daily.sources);
-    el.innerHTML = rows + `<div class="data-note">Each day is a consensus weighted ~75% toward WeatherAPI.com across the providers that cover it (${minSrc === maxSrc ? maxSrc : minSrc+'–'+maxSrc} of ${PROVIDERS.length}) — free plans cover fewer days, so later days may use fewer sources. Rain % is each provider's own daily chance where published; Meteosource is a 0/100 read of whether ≥1mm is forecast. Hover a percentage to see its source count.</div>`;
+    el.innerHTML = rows + `<div class="data-note">Each day is a consensus weighted 33% each toward WeatherAPI.com and Tomorrow.io across the providers that cover it (${minSrc === maxSrc ? maxSrc : minSrc+'–'+maxSrc} of ${PROVIDERS.length}) — free plans cover fewer days, so later days may use fewer sources. Rain % is each provider's own daily chance where published; Meteosource is a 0/100 read of whether ≥1mm is forecast. Hover a percentage to see its source count.</div>`;
   }).catch(()=>{
     el.innerHTML = `<div class="mini-error"><span>5-day forecast unavailable right now.</span><button class="text-btn" onclick="loadFiveDay(${lat}, ${lon})">Retry</button></div>`;
   });
@@ -2050,7 +2086,6 @@ async function runForLocation(lat, lon, label){
     const curThunder = PROVIDERS.map(m => thunderSeries[m.key][startIdx]);
 
     const consensusTemp = consensus(curTemps);
-    const consensusRain = precipAgreementPct(curPrecip, curPrecipProb);
     const consensusThunder = thunderAgreementPct(curThunder);
     const consensusWind = consensus(curWinds);
     const consensusCloud = consensus(curClouds);
@@ -2060,6 +2095,7 @@ async function runForLocation(lat, lon, label){
     const consensusWindDir = consensus(curWindDir);
     const consensusPressure = consensus(curPressure);
     const consensusUV = consensus(curUV);
+    const consensusRain = precipAgreementPct(curPrecip, curPrecipProb, hourEnv(hourly, startIdx));
     const spread = stddev(curTemps);
 
     const nowCondition = conditionLabel(consensusPrecipAmt ?? 0, consensusCloud, consensusRain, isDaytime(new Date(hourly.time[startIdx])), consensusThunder);
@@ -2122,7 +2158,7 @@ async function runForLocation(lat, lon, label){
     loadFiveDay(lat, lon);
 
     document.getElementById('modelLegend').innerHTML =
-      `Providers in this forecast: <b>${PROVIDERS.map(m=>m.name).join(', ')}</b> — consensus is weighted about 75% toward WeatherAPI.com, with the other providers sharing the remaining 25%. Rain chance uses each provider's own calibrated probability-of-precipitation where they publish one (OpenWeatherMap, WeatherAPI.com, Visual Crossing), falling back to an amount-based vote only when none is available.`;
+      `Providers in this forecast: <b>${PROVIDERS.map(m=>m.name).join(', ')}</b> — consensus is weighted 33% each toward WeatherAPI.com and Tomorrow.io, with the other providers sharing the remaining 34%. Rain chance blends each provider's own probability-of-precipitation (weighted as above; an amount-based read where none is published) with a small 15% physics check built from cloud cover, humidity, pressure and dew-point gap.`;
 
     const confBadge = document.getElementById('confBadge');
     if(spread < 1.5){ confBadge.className = 'badge high'; confBadge.textContent = 'High Confidence'; }
@@ -2157,7 +2193,7 @@ async function runForLocation(lat, lon, label){
     // Check if rain risk climbs later in the day (next 6 hours) for a "rain risk increases after X" style note
     const laterIdx = Math.min(startIdx + 6, hourly.time.length - 1);
     if(laterIdx > startIdx){
-      const laterRain = precipAgreementPct(PROVIDERS.map(m => precip[m.key][laterIdx]), PROVIDERS.map(m => precipProb[m.key][laterIdx]));
+      const laterRain = precipAgreementPct(PROVIDERS.map(m => precip[m.key][laterIdx]), PROVIDERS.map(m => precipProb[m.key][laterIdx]), hourEnv(hourly, laterIdx));
       if(laterRain !== null && consensusRain !== null && laterRain - consensusRain >= 25){
         insights.push({icon:'📈', text:`Rain risk increases later — model agreement climbs to ${laterRain}% around ${fmtHour(hourly.time[laterIdx])}.`});
       }
@@ -2187,7 +2223,7 @@ async function runForLocation(lat, lon, label){
       tension:.3, pointRadius:0, borderWidth:1.4
     }));
     const consensusData = chartLabels.map((_,i) => consensus(PROVIDERS.map(m => temps[m.key][startIdx+i])));
-    const rainConsensusData = chartLabels.map((_,i) => precipAgreementPct(PROVIDERS.map(m => precip[m.key][startIdx+i]), PROVIDERS.map(m => precipProb[m.key][startIdx+i])));
+    const rainConsensusData = chartLabels.map((_,i) => precipAgreementPct(PROVIDERS.map(m => precip[m.key][startIdx+i]), PROVIDERS.map(m => precipProb[m.key][startIdx+i]), hourEnv(hourly, startIdx+i)));
     const cloudConsensusData = chartLabels.map((_,i) => consensus(PROVIDERS.map(m => clouds[m.key][startIdx+i])));
     const precipAmtData = chartLabels.map((_,i) => consensus(PROVIDERS.map(m => precip[m.key][startIdx+i])));
     const thunderConsensusData = chartLabels.map((_,i) => thunderAgreementPct(PROVIDERS.map(m => thunderSeries[m.key][startIdx+i])));
@@ -2238,7 +2274,11 @@ async function runForLocation(lat, lon, label){
       borderColor: m.color,
       tension:.3, pointRadius:0, borderWidth:1.4
     }));
-    const rainConsensusFine = fineRain.labels.map((_,i) => consensus(PROVIDERS.map(m => fineRain.series[m.key][i])));
+    const rainConsensusFine = fineRain.labels.map((_,i) => {
+      const c = consensus(PROVIDERS.map(m => fineRain.series[m.key][i]));
+      return c === null ? null : blendRainWithHeuristic(c, fineRain.heur[i]);
+    });
+    rainDatasets.push({label:'Weather physics (cloud/humidity/pressure)', data:fineRain.heur, borderColor:'#9aa7bd', borderDash:[5,4], borderWidth:1.4, tension:.3, pointRadius:0});
     rainDatasets.push({label:'Consensus', data:rainConsensusFine, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
 
     if(window.rainChartInstance) window.rainChartInstance.destroy();
@@ -2312,7 +2352,7 @@ async function runForLocation(lat, lon, label){
     windDatasets.push({label:'Consensus', data:windData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
     renderProviderChart('windChart', 'windChartLegend', chartLabels, windDatasets, {suffix:' km/h', decimals:1});
     document.getElementById('windChartNote').innerHTML =
-      `Each provider's own wind-speed forecast at 10m, hourly for the next 24 hours. Consensus is weighted about 75% toward WeatherAPI.com (the rest split among the other providers), same as every chart here.`;
+      `Each provider's own wind-speed forecast at 10m, hourly for the next 24 hours. Consensus is weighted 33% each toward WeatherAPI.com and Tomorrow.io (the rest split among the other providers), same as every chart here.`;
 
     // Feels-like ("RealFeel"), per provider
     const feelsDatasets = PROVIDERS.map(m => ({

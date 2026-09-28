@@ -515,30 +515,91 @@ async function fetchProviders(lat, lon){
 // 5-day outlook: grouped from OpenWeatherMap's 5-day/3-hour feed (its native use case),
 // kept as a separate call so it doesn't bloat the main hourly fetch above.
 async function fetchFiveDayOverview(lat, lon){
-  const json = await fetchOWM(lat, lon);
-  const byDay = {};
-  (json.list || []).forEach(entry => {
-    // Group by each entry's actual LOCAL calendar date, not the UTC date string OWM
-    // returns in dt_txt. Grouping by raw UTC date misaligns day boundaries by several
-    // hours for any location that isn't near UTC+0 (Manila is UTC+8), which was
-    // silently splitting/skipping a calendar day in the outlook.
-    const d = new Date(entry.dt * 1000);
-    const day = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    (byDay[day] = byDay[day] || []).push(entry);
+  // Daily outlook as a real multi-provider consensus: each provider contributes its own
+  // high/low/rain%/thunder flag per local calendar date, then we take the median across
+  // whichever providers actually cover that date. Free-plan limits mean far-out days can
+  // have fewer sources (WeatherAPI caps at 3 days), so each day records how many it used.
+  const localKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const byDate = {}; // date -> {hi:[], lo:[], rain:[], thunder:[]}
+  const slot = k => (byDate[k] = byDate[k] || {hi:[], lo:[], rain:[], thunder:[]});
+
+  const [owmR, wapiR, vcR, msR] = await Promise.allSettled([
+    fetchOWM(lat, lon),
+    fetchWeatherAPI(lat, lon, 3),
+    fetchVisualCrossingDaily(lat, lon),
+    fetchMeteosourceDaily(lat, lon)
+  ]);
+  if(owmR.status !== 'fulfilled' && wapiR.status !== 'fulfilled' && vcR.status !== 'fulfilled' && msR.status !== 'fulfilled'){
+    throw new Error('No provider returned a daily forecast');
+  }
+
+  // OpenWeatherMap: group 3-hour blocks by LOCAL date (dt_txt is UTC and misaligns days).
+  if(owmR.status === 'fulfilled'){
+    const groups = {};
+    (owmR.value.list || []).forEach(e => { (groups[localKey(new Date(e.dt*1000))] = groups[localKey(new Date(e.dt*1000))] || []).push(e); });
+    Object.entries(groups).forEach(([k, es]) => {
+      const s = slot(k);
+      s.hi.push(Math.max(...es.map(e => e.main.temp)));
+      s.lo.push(Math.min(...es.map(e => e.main.temp)));
+      s.rain.push(Math.max(...es.map(e => Math.round((e.pop||0)*100))));
+      s.thunder.push(es.some(e => e.weather && e.weather[0] && e.weather[0].id >= 200 && e.weather[0].id < 300) ? 1 : 0);
+    });
+  }
+  // WeatherAPI.com: daily_chance_of_rain is its own published daily probability.
+  if(wapiR.status === 'fulfilled'){
+    (wapiR.value.forecast?.forecastday || []).forEach(fd => {
+      const s = slot(fd.date), dy = fd.day || {};
+      s.hi.push(dy.maxtemp_c); s.lo.push(dy.mintemp_c);
+      s.rain.push(dy.daily_chance_of_rain ?? 0);
+      s.thunder.push(/thunder/i.test(dy.condition?.text || '') ? 1 : 0);
+    });
+  }
+  // Visual Crossing: precipprob is its own daily probability.
+  if(vcR.status === 'fulfilled'){
+    (vcR.value.days || []).forEach(d => {
+      const s = slot(d.datetime);
+      s.hi.push(d.tempmax); s.lo.push(d.tempmin);
+      s.rain.push(d.precipprob ?? 0);
+      s.thunder.push(/thunder/i.test(`${d.conditions ?? ''} ${d.icon ?? ''}`) ? 1 : 0);
+    });
+  }
+  // Meteosource: no probability field on the free plan, so use a plain read of whether
+  // its forecast daily total is at least 1mm (a whole-day trace threshold, not the hourly one).
+  if(msR.status === 'fulfilled'){
+    (msR.value.daily?.data || []).forEach(d => {
+      const a = d.all_day || {};
+      const s = slot(d.day);
+      s.hi.push(a.temperature_max); s.lo.push(a.temperature_min);
+      s.rain.push((a.precipitation?.total ?? 0) >= 1 ? 100 : 0);
+      s.thunder.push(/thunder/i.test(`${d.weather ?? ''} ${d.summary ?? ''}`) ? 1 : 0);
+    });
+  }
+
+  const todayKey = localKey(new Date());
+  const days = Object.keys(byDate).filter(k => k >= todayKey).sort().slice(0, 5);
+  const time=[], tmax=[], tmin=[], rain=[], thunder=[], sources=[];
+  days.forEach(k => {
+    const s = byDate[k];
+    time.push(k+'T00:00:00'); // no 'Z' — local midnight, matching the local-date keys
+    tmax.push(median(s.hi));
+    tmin.push(median(s.lo));
+    rain.push(Math.round(median(s.rain) ?? 0));
+    thunder.push(thunderAgreementPct(s.thunder) >= 50); // majority of covering providers, not a lone flag
+    sources.push(s.hi.filter(v => v !== null && v !== undefined && !isNaN(v)).length);
   });
-  const days = Object.keys(byDay).sort().slice(0, 5);
-  const time=[], tmax=[], tmin=[], popMax=[], thunder=[];
-  days.forEach(day => {
-    const entries = byDay[day];
-    time.push(day+'T00:00:00'); // no 'Z' — parsed as local midnight, matching the local-date key above
-    tmax.push(Math.max(...entries.map(e => e.main.temp)));
-    tmin.push(Math.min(...entries.map(e => e.main.temp)));
-    popMax.push(Math.max(...entries.map(e => Math.round((e.pop||0)*100))));
-    // Real thunderstorm signal (OWM condition code 200-232) rather than guessing from
-    // rainfall amount — if any 3-hour block that day is flagged, the day is too.
-    thunder.push(entries.some(e => e.weather && e.weather[0] && e.weather[0].id >= 200 && e.weather[0].id < 300));
-  });
-  return {daily: {time, temperature_2m_max:tmax, temperature_2m_min:tmin, precipitation_probability_max:popMax, thunder}};
+  return {daily: {time, temperature_2m_max:tmax, temperature_2m_min:tmin, precipitation_probability_max:rain, thunder, sources}};
+}
+async function fetchVisualCrossingDaily(lat, lon){
+  const url = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/${lat},${lon}/next5days?unitGroup=metric&include=days&key=${getApiKey('visualcrossing')}&contentType=json`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('Visual Crossing error ' + res.status);
+  return res.json();
+}
+async function fetchMeteosourceDaily(lat, lon){
+  const url = `https://www.meteosource.com/api/v1/free/point?lat=${lat}&lon=${lon}&sections=daily&language=en&units=metric&key=${getApiKey('meteosource')}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('Meteosource error ' + res.status);
+  return res.json();
 }
 
 // Air quality via OpenWeatherMap's Air Pollution API. Still runs PM2.5 through the
@@ -940,8 +1001,10 @@ function conditionLabel(mmPerHour, cloudPct, agreementPct, isDay, thunderPct){
   // everything below — lightning risk doesn't scale cleanly with rainfall rate, so
   // this replaces the old ">4mm/hr = thunder" guess with an actual categorical flag.
   if(thunderPct !== null && thunderPct !== undefined){
-    if(thunderPct >= 50) return {text:'Thunderstorm', icon:'⛈️'};
-    if(thunderPct >= 25) return {text:'Chance of Thunderstorm', icon:'⛈️'};
+    // Consensus is the balancer: one provider out of four (25%) flagging thunder is a
+    // lone dissent, not a signal. Need at least half to say "chance", most to say it flat out.
+    if(thunderPct >= 75) return {text:'Thunderstorm', icon:'⛈️'};
+    if(thunderPct >= 50) return {text:'Chance of Thunderstorm', icon:'⛈️'};
   }
 
   let rainName = null;
@@ -1834,7 +1897,7 @@ function loadFiveDay(lat, lon){
       return `<div class="day-row">
         <div class="day-name">${dayLabel}</div>
         <div class="day-icon">${icon}</div>
-        <div class="day-rain">${rain ?? 0}%</div>
+        <div class="day-rain" title="Median of ${fd.daily.sources[i]} provider${fd.daily.sources[i]===1?'':'s'}">${rain ?? 0}%</div>
         <div class="day-bar-wrap">
           <div class="day-lo">${lo?.toFixed(0) ?? '--'}°</div>
           <div class="day-bar-track"><div class="day-bar-fill" style="left:${leftPct}%; width:${widthPct}%;"></div></div>
@@ -1842,7 +1905,8 @@ function loadFiveDay(lat, lon){
         </div>
       </div>`;
     }).join('');
-    el.innerHTML = rows;
+    const minSrc = Math.min(...fd.daily.sources), maxSrc = Math.max(...fd.daily.sources);
+    el.innerHTML = rows + `<div class="data-note">Each day is the median across the providers that cover it (${minSrc === maxSrc ? maxSrc : minSrc+'–'+maxSrc} of ${PROVIDERS.length}) — free plans cover fewer days, so later days may use fewer sources. Rain % is each provider's own daily chance where published; Meteosource is a 0/100 read of whether ≥1mm is forecast. Hover a percentage to see its source count.</div>`;
   }).catch(()=>{
     el.innerHTML = `<div class="mini-error"><span>5-day forecast unavailable right now.</span><button class="text-btn" onclick="loadFiveDay(${lat}, ${lon})">Retry</button></div>`;
   });

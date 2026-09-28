@@ -226,6 +226,34 @@ function median(arr){
   const mid = Math.floor(a.length/2);
   return a.length % 2 ? a[mid] : (a[mid-1]+a[mid])/2;
 }
+
+// --- Weighted consensus: our computations lean ~75% toward WeatherAPI.com, with the other
+// providers sharing the remaining 25% equally. This is a weighted MEAN (a weighted median
+// would just collapse to WeatherAPI whenever it has a value). If a provider has no value
+// for a given hour/day, the weights are re-normalized over whoever does, so a gap never
+// drags the result toward zero. ---
+const PRIMARY_PROVIDER = 'wapi';
+const PRIMARY_WEIGHT = 0.75;
+function providerWeight(key){
+  const others = PROVIDERS.length - 1;
+  return key === PRIMARY_PROVIDER ? PRIMARY_WEIGHT : (others > 0 ? (1 - PRIMARY_WEIGHT) / others : 0);
+}
+function consensusMap(byKey){
+  let sum = 0, wsum = 0;
+  PROVIDERS.forEach(p => {
+    const v = byKey[p.key];
+    if(v === null || v === undefined || isNaN(v)) return;
+    const w = providerWeight(p.key);
+    sum += v*w; wsum += w;
+  });
+  return wsum > 0 ? sum/wsum : null;
+}
+// Same thing for an array ordered like PROVIDERS (how nearly every call site builds it).
+function consensus(arr){
+  const byKey = {};
+  PROVIDERS.forEach((p,i) => { byKey[p.key] = arr[i]; });
+  return consensusMap(byKey);
+}
 function mean(arr){
   const a = arr.filter(v => v !== null && v !== undefined && !isNaN(v));
   if(!a.length) return null;
@@ -252,7 +280,7 @@ function providerRainPct(mm, prob){
 }
 function precipAgreementPct(values, probValues){
   const pcts = values.map((mm,i) => providerRainPct(mm, probValues ? probValues[i] : undefined));
-  const m = median(pcts);
+  const m = consensus(pcts);
   return m === null ? null : Math.round(m);
 }
 
@@ -260,10 +288,9 @@ function precipAgreementPct(values, probValues){
 // conditions for this hour — a real categorical signal from each provider's own data,
 // not inferred from rainfall rate.
 function thunderAgreementPct(values){
-  const valid = values.filter(v => v === 0 || v === 1);
-  if(!valid.length) return null;
-  const flagged = valid.filter(v => v === 1).length;
-  return Math.round((flagged/valid.length)*100);
+  const flags = values.map(v => (v === 0 || v === 1) ? v : null);
+  const c = consensus(flags);
+  return c === null ? null : Math.round(c*100);
 }
 
 // Same canonical per-provider % as above, but also names which providers are actually
@@ -273,13 +300,14 @@ function computeAgreement(precip, hourIdx, precipProb){
   const infos = PROVIDERS.map(m => ({
     name: m.name,
     pct: providerRainPct(precip[m.key][hourIdx], precipProb ? precipProb[m.key]?.[hourIdx] : undefined)
-  })).filter(o => o.pct !== null);
-  if(!infos.length) return {pct:null, count:0, total:0, names:[]};
-  const raining = infos.filter(o => o.pct >= 50);
+  }));
+  const valid = infos.filter(o => o.pct !== null);
+  if(!valid.length) return {pct:null, count:0, total:0, names:[]};
+  const raining = valid.filter(o => o.pct >= 50);
   return {
-    pct: Math.round(median(infos.map(o => o.pct))),
+    pct: Math.round(consensus(infos.map(o => o.pct))),
     count: raining.length,
-    total: infos.length,
+    total: valid.length,
     names: raining.map(o=>o.name)
   };
 }
@@ -516,12 +544,12 @@ async function fetchProviders(lat, lon){
 // kept as a separate call so it doesn't bloat the main hourly fetch above.
 async function fetchFiveDayOverview(lat, lon){
   // Daily outlook as a real multi-provider consensus: each provider contributes its own
-  // high/low/rain%/thunder flag per local calendar date, then we take the median across
+  // high/low/rain%/thunder flag per local calendar date, then we take the WeatherAPI-weighted consensus across
   // whichever providers actually cover that date. Free-plan limits mean far-out days can
   // have fewer sources (WeatherAPI caps at 3 days), so each day records how many it used.
   const localKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const byDate = {}; // date -> {hi:[], lo:[], rain:[], thunder:[]}
-  const slot = k => (byDate[k] = byDate[k] || {hi:[], lo:[], rain:[], thunder:[]});
+  const byDate = {}; // date -> {hi:{}, lo:{}, rain:{}, thunder:{}}
+  const slot = k => (byDate[k] = byDate[k] || {hi:{}, lo:{}, rain:{}, thunder:{}});
 
   const [owmR, wapiR, vcR, msR] = await Promise.allSettled([
     fetchOWM(lat, lon),
@@ -539,28 +567,28 @@ async function fetchFiveDayOverview(lat, lon){
     (owmR.value.list || []).forEach(e => { (groups[localKey(new Date(e.dt*1000))] = groups[localKey(new Date(e.dt*1000))] || []).push(e); });
     Object.entries(groups).forEach(([k, es]) => {
       const s = slot(k);
-      s.hi.push(Math.max(...es.map(e => e.main.temp)));
-      s.lo.push(Math.min(...es.map(e => e.main.temp)));
-      s.rain.push(Math.max(...es.map(e => Math.round((e.pop||0)*100))));
-      s.thunder.push(es.some(e => e.weather && e.weather[0] && e.weather[0].id >= 200 && e.weather[0].id < 300) ? 1 : 0);
+      s.hi.owm = Math.max(...es.map(e => e.main.temp));
+      s.lo.owm = Math.min(...es.map(e => e.main.temp));
+      s.rain.owm = Math.max(...es.map(e => Math.round((e.pop||0)*100)));
+      s.thunder.owm = es.some(e => e.weather && e.weather[0] && e.weather[0].id >= 200 && e.weather[0].id < 300) ? 1 : 0;
     });
   }
   // WeatherAPI.com: daily_chance_of_rain is its own published daily probability.
   if(wapiR.status === 'fulfilled'){
     (wapiR.value.forecast?.forecastday || []).forEach(fd => {
       const s = slot(fd.date), dy = fd.day || {};
-      s.hi.push(dy.maxtemp_c); s.lo.push(dy.mintemp_c);
-      s.rain.push(dy.daily_chance_of_rain ?? 0);
-      s.thunder.push(/thunder/i.test(dy.condition?.text || '') ? 1 : 0);
+      s.hi.wapi = dy.maxtemp_c; s.lo.wapi = dy.mintemp_c;
+      s.rain.wapi = dy.daily_chance_of_rain ?? 0;
+      s.thunder.wapi = /thunder/i.test(dy.condition?.text || '') ? 1 : 0;
     });
   }
   // Visual Crossing: precipprob is its own daily probability.
   if(vcR.status === 'fulfilled'){
     (vcR.value.days || []).forEach(d => {
       const s = slot(d.datetime);
-      s.hi.push(d.tempmax); s.lo.push(d.tempmin);
-      s.rain.push(d.precipprob ?? 0);
-      s.thunder.push(/thunder/i.test(`${d.conditions ?? ''} ${d.icon ?? ''}`) ? 1 : 0);
+      s.hi.vc = d.tempmax; s.lo.vc = d.tempmin;
+      s.rain.vc = d.precipprob ?? 0;
+      s.thunder.vc = /thunder/i.test(`${d.conditions ?? ''} ${d.icon ?? ''}`) ? 1 : 0;
     });
   }
   // Meteosource: no probability field on the free plan, so use a plain read of whether
@@ -569,9 +597,9 @@ async function fetchFiveDayOverview(lat, lon){
     (msR.value.daily?.data || []).forEach(d => {
       const a = d.all_day || {};
       const s = slot(d.day);
-      s.hi.push(a.temperature_max); s.lo.push(a.temperature_min);
-      s.rain.push((a.precipitation?.total ?? 0) >= 1 ? 100 : 0);
-      s.thunder.push(/thunder/i.test(`${d.weather ?? ''} ${d.summary ?? ''}`) ? 1 : 0);
+      s.hi.ms = a.temperature_max; s.lo.ms = a.temperature_min;
+      s.rain.ms = (a.precipitation?.total ?? 0) >= 1 ? 100 : 0;
+      s.thunder.ms = /thunder/i.test(`${d.weather ?? ''} ${d.summary ?? ''}`) ? 1 : 0;
     });
   }
 
@@ -581,11 +609,11 @@ async function fetchFiveDayOverview(lat, lon){
   days.forEach(k => {
     const s = byDate[k];
     time.push(k+'T00:00:00'); // no 'Z' — local midnight, matching the local-date keys
-    tmax.push(median(s.hi));
-    tmin.push(median(s.lo));
-    rain.push(Math.round(median(s.rain) ?? 0));
-    thunder.push(thunderAgreementPct(s.thunder) >= 50); // majority of covering providers, not a lone flag
-    sources.push(s.hi.filter(v => v !== null && v !== undefined && !isNaN(v)).length);
+    tmax.push(consensusMap(s.hi));
+    tmin.push(consensusMap(s.lo));
+    rain.push(Math.round(consensusMap(s.rain) ?? 0));
+    thunder.push((consensusMap(s.thunder) ?? 0) >= 0.5); // weighted share of covering providers
+    sources.push(Object.values(s.hi).filter(v => v !== null && v !== undefined && !isNaN(v)).length);
   });
   return {daily: {time, temperature_2m_max:tmax, temperature_2m_min:tmin, precipitation_probability_max:rain, thunder, sources}};
 }
@@ -688,7 +716,7 @@ function modelSeries(hourly, field){
 
 // Neither free-tier provider offers a true sub-hourly feed, so instead of pretending
 // to have one, this builds honest 15-minute steps by interpolating between consecutive
-// hourly consensus values (median across both providers) for the "next hours" view.
+// hourly consensus values (WeatherAPI-weighted consensus) for the "next hours" view.
 function buildFineNowcast(hourlyProviders, startIdx){
   const times = hourlyProviders.time;
   const temps = modelSeries(hourlyProviders, 'temperature_2m');
@@ -697,9 +725,9 @@ function buildFineNowcast(hourlyProviders, startIdx){
   const clouds = modelSeries(hourlyProviders, 'cloud_cover');
   const thunder = modelSeries(hourlyProviders, 'thunder');
 
-  const hourlyTemp = times.map((_, i) => median(PROVIDERS.map(m => temps[m.key][i])));
-  const hourlyCloud = times.map((_, i) => median(PROVIDERS.map(m => clouds[m.key][i])));
-  const hourlyPrecip = times.map((_, i) => median(PROVIDERS.map(m => precip[m.key][i])));
+  const hourlyTemp = times.map((_, i) => consensus(PROVIDERS.map(m => temps[m.key][i])));
+  const hourlyCloud = times.map((_, i) => consensus(PROVIDERS.map(m => clouds[m.key][i])));
+  const hourlyPrecip = times.map((_, i) => consensus(PROVIDERS.map(m => precip[m.key][i])));
 
   const now = new Date();
   const windowEnd = new Date(now.getTime() + 5*60*60*1000);
@@ -1897,7 +1925,7 @@ function loadFiveDay(lat, lon){
       return `<div class="day-row">
         <div class="day-name">${dayLabel}</div>
         <div class="day-icon">${icon}</div>
-        <div class="day-rain" title="Median of ${fd.daily.sources[i]} provider${fd.daily.sources[i]===1?'':'s'}">${rain ?? 0}%</div>
+        <div class="day-rain" title="Consensus of ${fd.daily.sources[i]} provider${fd.daily.sources[i]===1?'':'s'}">${rain ?? 0}%</div>
         <div class="day-bar-wrap">
           <div class="day-lo">${lo?.toFixed(0) ?? '--'}°</div>
           <div class="day-bar-track"><div class="day-bar-fill" style="left:${leftPct}%; width:${widthPct}%;"></div></div>
@@ -1906,7 +1934,7 @@ function loadFiveDay(lat, lon){
       </div>`;
     }).join('');
     const minSrc = Math.min(...fd.daily.sources), maxSrc = Math.max(...fd.daily.sources);
-    el.innerHTML = rows + `<div class="data-note">Each day is the median across the providers that cover it (${minSrc === maxSrc ? maxSrc : minSrc+'–'+maxSrc} of ${PROVIDERS.length}) — free plans cover fewer days, so later days may use fewer sources. Rain % is each provider's own daily chance where published; Meteosource is a 0/100 read of whether ≥1mm is forecast. Hover a percentage to see its source count.</div>`;
+    el.innerHTML = rows + `<div class="data-note">Each day is a consensus weighted ~75% toward WeatherAPI.com across the providers that cover it (${minSrc === maxSrc ? maxSrc : minSrc+'–'+maxSrc} of ${PROVIDERS.length}) — free plans cover fewer days, so later days may use fewer sources. Rain % is each provider's own daily chance where published; Meteosource is a 0/100 read of whether ≥1mm is forecast. Hover a percentage to see its source count.</div>`;
   }).catch(()=>{
     el.innerHTML = `<div class="mini-error"><span>5-day forecast unavailable right now.</span><button class="text-btn" onclick="loadFiveDay(${lat}, ${lon})">Retry</button></div>`;
   });
@@ -1952,17 +1980,17 @@ async function runForLocation(lat, lon, label){
     const curUV = PROVIDERS.map(m => uvSeries[m.key][startIdx]);
     const curThunder = PROVIDERS.map(m => thunderSeries[m.key][startIdx]);
 
-    const consensusTemp = median(curTemps);
+    const consensusTemp = consensus(curTemps);
     const consensusRain = precipAgreementPct(curPrecip, curPrecipProb);
     const consensusThunder = thunderAgreementPct(curThunder);
-    const consensusWind = median(curWinds);
-    const consensusCloud = median(curClouds);
-    const consensusPrecipAmt = median(curPrecip);
-    const consensusFeels = median(curFeels);
-    const consensusHumidity = median(curHumidity);
-    const consensusWindDir = median(curWindDir);
-    const consensusPressure = median(curPressure);
-    const consensusUV = median(curUV);
+    const consensusWind = consensus(curWinds);
+    const consensusCloud = consensus(curClouds);
+    const consensusPrecipAmt = consensus(curPrecip);
+    const consensusFeels = consensus(curFeels);
+    const consensusHumidity = consensus(curHumidity);
+    const consensusWindDir = consensus(curWindDir);
+    const consensusPressure = consensus(curPressure);
+    const consensusUV = consensus(curUV);
     const spread = stddev(curTemps);
 
     const nowCondition = conditionLabel(consensusPrecipAmt ?? 0, consensusCloud, consensusRain, isDaytime(new Date(hourly.time[startIdx])), consensusThunder);
@@ -2025,7 +2053,7 @@ async function runForLocation(lat, lon, label){
     loadFiveDay(lat, lon);
 
     document.getElementById('modelLegend').innerHTML =
-      `Providers in this forecast: <b>${PROVIDERS.map(m=>m.name).join(', ')}</b> — temperature/wind/cloud consensus is the median across all of them. Rain chance uses each provider's own calibrated probability-of-precipitation where they publish one (OpenWeatherMap, WeatherAPI.com, Visual Crossing), falling back to an amount-based vote only when none is available.`;
+      `Providers in this forecast: <b>${PROVIDERS.map(m=>m.name).join(', ')}</b> — consensus is weighted about 75% toward WeatherAPI.com, with the other providers sharing the remaining 25%. Rain chance uses each provider's own calibrated probability-of-precipitation where they publish one (OpenWeatherMap, WeatherAPI.com, Visual Crossing), falling back to an amount-based vote only when none is available.`;
 
     const confBadge = document.getElementById('confBadge');
     if(spread < 1.5){ confBadge.className = 'badge high'; confBadge.textContent = 'High Confidence'; }
@@ -2089,15 +2117,15 @@ async function runForLocation(lat, lon, label){
       borderColor: m.color,
       tension:.3, pointRadius:0, borderWidth:1.4
     }));
-    const consensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => temps[m.key][startIdx+i])));
+    const consensusData = chartLabels.map((_,i) => consensus(PROVIDERS.map(m => temps[m.key][startIdx+i])));
     const rainConsensusData = chartLabels.map((_,i) => precipAgreementPct(PROVIDERS.map(m => precip[m.key][startIdx+i]), PROVIDERS.map(m => precipProb[m.key][startIdx+i])));
-    const cloudConsensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => clouds[m.key][startIdx+i])));
-    const precipAmtData = chartLabels.map((_,i) => median(PROVIDERS.map(m => precip[m.key][startIdx+i])));
+    const cloudConsensusData = chartLabels.map((_,i) => consensus(PROVIDERS.map(m => clouds[m.key][startIdx+i])));
+    const precipAmtData = chartLabels.map((_,i) => consensus(PROVIDERS.map(m => precip[m.key][startIdx+i])));
     const thunderConsensusData = chartLabels.map((_,i) => thunderAgreementPct(PROVIDERS.map(m => thunderSeries[m.key][startIdx+i])));
     chartDatasets.push({label:'Consensus', data:consensusData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
 
     // Connected-line hourly strip (temperature line, wind speed per hour, sunset marked)
-    const windData = chartLabels.map((_,i) => median(PROVIDERS.map(m => winds[m.key][startIdx+i])));
+    const windData = chartLabels.map((_,i) => consensus(PROVIDERS.map(m => winds[m.key][startIdx+i])));
     renderHourStrip(hourly.time.slice(startIdx, startIdx+24), consensusData, windData, rainConsensusData, cloudConsensusData, SUN_TIMES, precipAmtData, thunderConsensusData);
 
     if(window.mainChartInstance) window.mainChartInstance.destroy();
@@ -2141,7 +2169,7 @@ async function runForLocation(lat, lon, label){
       borderColor: m.color,
       tension:.3, pointRadius:0, borderWidth:1.4
     }));
-    const rainConsensusFine = fineRain.labels.map((_,i) => median(PROVIDERS.map(m => fineRain.series[m.key][i])));
+    const rainConsensusFine = fineRain.labels.map((_,i) => consensus(PROVIDERS.map(m => fineRain.series[m.key][i])));
     rainDatasets.push({label:'Consensus', data:rainConsensusFine, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
 
     if(window.rainChartInstance) window.rainChartInstance.destroy();
@@ -2215,14 +2243,14 @@ async function runForLocation(lat, lon, label){
     windDatasets.push({label:'Consensus', data:windData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
     renderProviderChart('windChart', 'windChartLegend', chartLabels, windDatasets, {suffix:' km/h', decimals:1});
     document.getElementById('windChartNote').innerHTML =
-      `Each provider's own wind-speed forecast at 10m, hourly for the next 24 hours. Consensus is the median across all of them, same as the temperature chart above.`;
+      `Each provider's own wind-speed forecast at 10m, hourly for the next 24 hours. Consensus is weighted about 75% toward WeatherAPI.com (the rest split among the other providers), same as every chart here.`;
 
     // Feels-like ("RealFeel"), per provider
     const feelsDatasets = PROVIDERS.map(m => ({
       label: m.name, data: feelsLikeSeries[m.key].slice(startIdx, startIdx+24), borderColor: m.color,
       tension:.3, pointRadius:0, borderWidth:1.4
     }));
-    const feelsConsensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => feelsLikeSeries[m.key][startIdx+i])));
+    const feelsConsensusData = chartLabels.map((_,i) => consensus(PROVIDERS.map(m => feelsLikeSeries[m.key][startIdx+i])));
     feelsDatasets.push({label:'Consensus', data:feelsConsensusData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
     renderProviderChart('feelsChart', 'feelsChartLegend', chartLabels, feelsDatasets, {suffix:'°', decimals:1});
     document.getElementById('feelsChartNote').innerHTML =
@@ -2233,7 +2261,7 @@ async function runForLocation(lat, lon, label){
       label: m.name, data: uvSeries[m.key].slice(startIdx, startIdx+24), borderColor: m.color,
       tension:.3, pointRadius:0, borderWidth:1.4
     }));
-    const uvConsensusData = chartLabels.map((_,i) => median(PROVIDERS.map(m => uvSeries[m.key][startIdx+i])));
+    const uvConsensusData = chartLabels.map((_,i) => consensus(PROVIDERS.map(m => uvSeries[m.key][startIdx+i])));
     uvDatasets.push({label:'Consensus', data:uvConsensusData, borderColor:'#ffffff', borderWidth:3, tension:.3, pointRadius:0});
     renderProviderChart('uvChart', 'uvChartLegend', chartLabels, uvDatasets, {suffix:'', decimals:1, min:0});
     const uvMaxToday = PROVIDERS.map(m => {
